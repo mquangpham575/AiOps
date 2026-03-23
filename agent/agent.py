@@ -88,12 +88,29 @@ QUY TẮC PHẢN HỒI (BẮT BUỘC):
   "confidence": 0.0-1.0
 }}
 
-VÍ DỤ:
-Cảnh báo CPU 95%:
-{{"reasoning": "CPU quá tải do stress-ng, cần xem process và kill.", "action": "get_top_processes", "params": {{"container_name": "target-app"}}, "confidence": 0.9}}
+LUẬT TUYỆT ĐỐI - KHÔNG ĐƯỢC VI PHẠM:
 
-Cảnh báo latency cao:
-{{"reasoning": "Latency cao do flood request, áp dụng rate limit ngay.", "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}, "confidence": 0.85}}
+🚨 CPU STRESS RULES (HighCPUUsage, HighSystemLoad, ContainerHighCPU, CriticalCPUStress):
+**action**: "auto_kill_cpu_stress"
+**params**: {{"container_name": "target-app", "cpu_threshold": 80.0}}
+FORBIDDEN: get_top_processes, kill_process
+
+🚨 DDOS RULES (HighRequestRate, HighRequestLatency):
+**action**: "apply_rate_limit"
+**params**: {{"interface": "eth0", "rate": "50/sec"}}
+
+🚨 SYSTEM OVERLOAD:
+**action**: "reduce_system_load" or "restart_service"
+
+ONLY VALID RESPONSES:
+
+CPU Stress Alert:
+{{"reasoning": "CPU stress detected, using auto_kill_cpu_stress", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80.0}}, "confidence": 0.95}}
+
+DDoS Alert:
+{{"reasoning": "DDoS attack detected, applying rate limit", "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}, "confidence": 0.9}}
+
+NEVER USE: get_top_processes or kill_process for CPU stress
 """
 
 

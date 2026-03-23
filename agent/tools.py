@@ -72,28 +72,60 @@ def get_top_processes(container_name: str = None) -> str:
         return f"ERROR: {e}"
 
 
+# ── Process name synonyms for better matching ──────────────────
+PROCESS_SYNONYMS = {
+    "stress": ["stress-ng", "stress-ng-cpu", "stress-ng-vm", "stress"],
+    "stress-ng": ["stress-ng", "stress-ng-cpu", "stress-ng-vm", "stress"],
+    "cpu-stress": ["stress-ng", "stress-ng-cpu", "stress"],
+    "load": ["stress-ng", "stress-ng-cpu", "yes", "dd"],
+    "target-app": ["python app.py", "app.py", "python", "flask"],
+    "web": ["python app.py", "app.py", "gunicorn", "uwsgi"],
+    "high-cpu": ["stress-ng", "stress-ng-cpu", "yes", "dd", "spin"]
+}
+
+def _get_process_patterns(process_name):
+    """Get all possible process name patterns for matching."""
+    patterns = [process_name.lower()]
+
+    # Add synonyms if available
+    for key, synonyms in PROCESS_SYNONYMS.items():
+        if key.lower() in process_name.lower() or process_name.lower() in key.lower():
+            patterns.extend([s.lower() for s in synonyms])
+
+    return list(set(patterns))  # Remove duplicates
+
+def _match_process(command, patterns):
+    """Check if a process command matches any of the patterns."""
+    command_lower = command.lower()
+    return any(pattern in command_lower for pattern in patterns)
+
 # ── Tool 2: Kill process trong container ────────────────────
 def kill_process(container_name: str = None, process_name: str = "stress-ng") -> str:
     """
-    Kill process theo tên trong container.
+    Kill process theo tên trong container với intelligent matching.
     Dùng khi: xác định được process gây quá tải.
+    Support synonyms: stress, stress-ng, cpu-stress, etc.
     """
     if container_name is None:
         container_name = DEFAULT_CONTAINER
 
+    # Get process patterns for intelligent matching
+    patterns = _get_process_patterns(process_name)
+    logger.info(f"[kill_process] Looking for processes matching: {patterns}")
+
     try:
-        # Use docker restart as failsafe method
+        # Use docker restart as failsafe method for stress-ng
         client = _get_docker()
         container = client.containers.get(container_name)
 
-        # For stress-ng, restart container is most reliable
-        if "stress" in process_name.lower():
+        # For stress-related processes, restart container is most reliable
+        if any(stress_pattern in process_name.lower() for stress_pattern in ["stress", "cpu", "load"]):
             container.restart(timeout=10)
-            msg = f"Restarted {container_name} to kill all {process_name} processes"
+            msg = f"Restarted {container_name} to kill all stress processes ({process_name})"
             logger.info(f"[kill_process] {msg}")
             return msg
 
-        # For other processes, try exec kill
+        # For other processes, try intelligent process matching
         top_result = container.top(ps_args="aux")
         if not top_result or "Processes" not in top_result:
             return f"Cannot get processes for {container_name}"
@@ -109,20 +141,27 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
             cmd_idx = -1
 
         killed_count = 0
+        matched_processes = []
+
+        # Find processes that match our patterns
         for proc in processes:
-            if process_name in proc[cmd_idx]:
-                pid = proc[pid_idx]
-                try:
-                    container.exec_run(f"kill -9 {pid}")
-                    killed_count += 1
-                    logger.info(f"[kill_process] Killed PID {pid} ({process_name})")
-                except Exception as e:
-                    logger.warning(f"[kill_process] Failed to kill PID {pid}: {e}")
+            command = proc[cmd_idx] if cmd_idx >= 0 else ""
+            if _match_process(command, patterns):
+                matched_processes.append((proc[pid_idx], command))
+
+        # Kill matched processes
+        for pid, command in matched_processes:
+            try:
+                container.exec_run(f"kill -9 {pid}")
+                killed_count += 1
+                logger.info(f"[kill_process] Killed PID {pid} ({command})")
+            except Exception as e:
+                logger.warning(f"[kill_process] Failed to kill PID {pid}: {e}")
 
         if killed_count > 0:
-            msg = f"Killed {killed_count} process(es) matching '{process_name}'"
+            msg = f"Killed {killed_count} process(es) matching '{process_name}': {[cmd for _, cmd in matched_processes]}"
         else:
-            msg = f"No process matching '{process_name}' found"
+            msg = f"No process matching '{process_name}' (patterns: {patterns}) found"
 
         logger.info(f"[kill_process] {msg}")
         return msg
@@ -326,6 +365,92 @@ def reduce_system_load() -> str:
     except Exception as e:
         logger.error(f"[reduce_system_load] Error: {e}")
         return f"ERROR: {e}"
+
+
+# ── Tool 9: Auto-analyze and kill high CPU processes ───────────
+def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 50.0) -> str:
+    """
+    Multi-step workflow: Automatically analyze top processes and kill high CPU consumers.
+    Dùng khi: CPU overload, cần tự động xử lý không cần manual intervention.
+    """
+    if container_name is None:
+        container_name = DEFAULT_CONTAINER
+
+    try:
+        # Step 1: Get top processes
+        processes_result = get_top_processes(container_name)
+
+        if "ERROR:" in processes_result or "Cannot" in processes_result:
+            return f"Cannot analyze processes: {processes_result}"
+
+        # Step 2: Parse process information to find high CPU consumers
+        lines = processes_result.split('\n')
+        high_cpu_processes = []
+
+        for line in lines[1:]:  # Skip header
+            parts = line.split()
+            if len(parts) >= 11:  # Ensure we have enough columns
+                try:
+                    cpu_usage = float(parts[2])  # %CPU column
+                    command = " ".join(parts[10:])  # COMMAND column
+
+                    if cpu_usage > cpu_threshold:
+                        high_cpu_processes.append((cpu_usage, command, parts[1]))  # (cpu%, command, pid)
+                except (ValueError, IndexError):
+                    continue
+
+        if not high_cpu_processes:
+            return f"No processes using >{cpu_threshold}% CPU found in {container_name}"
+
+        # Step 3: Auto-kill stress processes
+        killed_processes = []
+        for cpu_usage, command, pid in high_cpu_processes:
+            # Check if it's a stress-related process
+            if any(stress_keyword in command.lower() for stress_keyword in ["stress", "yes", "dd if=/dev/zero"]):
+                # Extract process name for kill_process
+                process_name = "stress-ng" if "stress" in command.lower() else command.split()[0]
+                kill_result = kill_process(container_name, process_name)
+                killed_processes.append(f"CPU {cpu_usage}%: {command} -> {kill_result}")
+
+        if killed_processes:
+            result = f"Auto-killed {len(killed_processes)} high CPU process(es):\n" + "\n".join(killed_processes)
+        else:
+            result = f"Found {len(high_cpu_processes)} high CPU processes but none were stress-related: {[cmd for _, cmd, _ in high_cpu_processes]}"
+
+        logger.info(f"[auto_kill_cpu_stress] {result}")
+        return result
+
+    except Exception as e:
+        logger.error(f"[auto_kill_cpu_stress] Error: {e}")
+        return f"ERROR: {e}"
+
+
+# ── Tool 10: Smart container validation ─────────────────────────
+def validate_container_exists(container_name: str = None) -> str:
+    """
+    Validate that a container exists and is running before taking actions.
+    Dùng khi: Cần check container trước khi thực hiện action để tránh lỗi.
+    """
+    if container_name is None:
+        container_name = DEFAULT_CONTAINER
+
+    try:
+        client = _get_docker()
+        container = client.containers.get(container_name)
+
+        status = container.status
+        if status == "running":
+            return f"✅ Container '{container_name}' exists and is running"
+        else:
+            return f"⚠️ Container '{container_name}' exists but is {status}"
+
+    except docker.errors.NotFound:
+        return f"❌ Container '{container_name}' not found"
+    except Exception as e:
+        logger.error(f"[validate_container_exists] Error: {e}")
+        return f"ERROR: {e}"
+
+
 TOOLS = {
     "get_top_processes":    get_top_processes,
     "kill_process":         kill_process,
@@ -335,18 +460,34 @@ TOOLS = {
     "apply_rate_limit":     apply_rate_limit,
     "check_system_load":    check_system_load,
     "reduce_system_load":   reduce_system_load,
+    "auto_kill_cpu_stress": auto_kill_cpu_stress,
+    "validate_container_exists": validate_container_exists,
 }
 
 TOOLS_DESCRIPTION = f"""
 Available tools (use exact names and correct parameters):
+
+BASIC TOOLS:
 - get_top_processes(container_name): Xem top CPU process trong container (default: {DEFAULT_CONTAINER})
-- kill_process(container_name, process_name): Kill process theo tên (default container: {DEFAULT_CONTAINER})
-- block_ip(ip): Block IP tấn công bằng iptables
+- kill_process(container_name, process_name): Kill process theo tên với smart matching (default container: {DEFAULT_CONTAINER})
 - restart_service(container_name): Restart container (default: {DEFAULT_CONTAINER})
 - get_prometheus_metrics(query): Query Prometheus lấy số liệu thực tế
+
+NETWORK TOOLS:
+- block_ip(ip): Block IP tấn công bằng iptables
 - apply_rate_limit(interface, rate): Rate limit traffic (default: interface="{DEFAULT_INTERFACE}", rate="{DEFAULT_RATE_LIMIT}")
+
+SYSTEM ANALYSIS:
 - check_system_load(): Kiểm tra system load (NO parameters needed)
 - reduce_system_load(): Giảm system load (NO parameters needed)
 
+ENHANCED TOOLS (NEW):
+- auto_kill_cpu_stress(container_name, cpu_threshold): Multi-step workflow tự động kill process CPU cao
+- validate_container_exists(container_name): Kiểm tra container có tồn tại và running không
+
+SMART MATCHING:
+kill_process hỗ trợ synonyms: "stress" -> ["stress-ng", "stress-ng-cpu"], "cpu-stress" -> ["stress-ng"], etc.
+
 IMPORTANT: check_system_load() and reduce_system_load() take NO parameters!
+For CPU stress scenarios, prefer auto_kill_cpu_stress() for best results!
 """

@@ -1,0 +1,31 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "scenario"]
+  group_wait: 10s # giảm xuống 10s để test nhanh hơn
+  group_interval: 30s # gửi lại mỗi 30s nếu alert vẫn firing
+  repeat_interval: 2m # lặp lại sau 2 phút
+  receiver: aiops-agent
+
+  routes:
+    - match:
+        severity: info
+      receiver: "null" # bỏ qua alert info (overhead baseline)
+
+receivers:
+  - name: "null"
+
+  - name: aiops-agent
+    webhook_configs:
+      - url: "http://agent:8080/webhook"
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["scenario"]

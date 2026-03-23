@@ -1,0 +1,95 @@
+groups:
+  - name: aiops_alerts
+    rules:
+      # ── Kịch bản 1: Overhead baseline (luôn active để đo) ──
+      - alert: AgentOverheadBaseline
+        expr: container_memory_usage_bytes{name="aiops-agent"} > 0
+        for: 1m
+        labels:
+          severity: info
+          scenario: overhead
+        annotations:
+          summary: "Agent overhead baseline"
+          description: "Agent RAM: {{ $value | humanize1024 }}B"
+
+      # ── Kịch bản 2: DDoS / High latency ────────────────────
+      - alert: HighRequestLatency
+        expr: |
+          rate(flask_http_request_duration_seconds_sum{job="target-app"}[1m])
+          /
+          rate(flask_http_request_duration_seconds_count{job="target-app"}[1m]) > 1.5
+        for: 30s
+        labels:
+          severity: critical
+          scenario: ddos
+        annotations:
+          summary: "Latency cao bat thuong"
+          description: "Latency trung binh: {{ $value | humanizeDuration }}"
+
+      - alert: HighRequestRate
+        expr: rate(flask_http_requests_total{job="target-app"}[30s]) > 100
+        for: 20s
+        labels:
+          severity: warning
+          scenario: ddos
+        annotations:
+          summary: "Request rate qua cao"
+          description: "Rate: {{ $value }} req/s"
+
+      # ── Kịch bản 3: CPU / Memory stress ────────────────────
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(instance)(
+            rate(node_cpu_seconds_total{mode="idle"}[1m])
+          ) * 100) > 80
+        for: 30s
+        labels:
+          severity: critical
+          scenario: cpu_stress
+        annotations:
+          summary: "CPU qua tai"
+          description: "CPU usage: {{ $value | humanize }}%"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+          / node_memory_MemTotal_bytes * 100 > 85
+        for: 30s
+        labels:
+          severity: warning
+          scenario: memory_stress
+        annotations:
+          summary: "RAM can day"
+          description: "Memory usage: {{ $value | humanize }}%"
+
+      - alert: ContainerHighCPU
+        expr: |
+          rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100 > 70
+        for: 30s
+        labels:
+          severity: critical
+          scenario: cpu_stress
+        annotations:
+          summary: "Container target-app CPU cao"
+          description: "Container CPU: {{ $value | humanize }}%"
+
+      # ── System Load alerts ──────────────────────────────────────
+      - alert: HighSystemLoad
+        expr: node_load1 > 2.0
+        for: 1m
+        labels:
+          severity: warning
+          scenario: system_load
+        annotations:
+          summary: "System load cao"
+          description: "1-minute load average: {{ $value }}"
+
+      - alert: CriticalSystemLoad
+        expr: node_load1 > 4.0
+        for: 30s
+        labels:
+          severity: critical
+          scenario: system_load
+        annotations:
+          summary: "System load nguy hiểm"
+          description: "1-minute load average: {{ $value }} - cần giảm tải ngay"

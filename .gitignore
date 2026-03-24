@@ -190,6 +190,11 @@ test_results/
 validation_output.txt
 benchmark_results/
 
+# Demo results (keep only manually committed ones)
+demos/*/results/*.txt
+demos/*/results/*.log
+demos/combined_results/*.txt
+
 # Generated reports
 reports/
 *.pdf
@@ -203,6 +208,9 @@ reports/
 
 # Lock files
 *.lock
+
+# Git hook samples
+.git/hooks/*.sample
 
 # Node modules (if any)
 node_modules/

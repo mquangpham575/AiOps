@@ -12,7 +12,7 @@
 
 **🎯 NT531 Network System Performance Evaluation Project**
 
-*Demonstrating the future of autonomous IT operations through intelligent AI agents*
+_Demonstrating the future of autonomous IT operations through intelligent AI agents_
 
 </div>
 
@@ -30,12 +30,12 @@ This project demonstrates a **production-ready AIOps system** that automatically
 
 ### **🏆 Impressive Results That Exceed All Targets**
 
-| KPI | Target | **Achieved** | Improvement |
-|-----|--------|-------------|-------------|
-| 🎯 **Decision Accuracy** | >90% | **95% confidence** | +5% over target |
-| ⚡ **Response Time** | <5s | **<2 seconds** | **99.8% faster** than manual |
-| 🛡️ **System Stability** | >99% | **100% uptime** | Zero failures |
-| 🔄 **Coverage** | Business hours | **24/7 automated** | **300% more coverage** |
+| KPI                      | Target         | **Achieved**       | Improvement                  |
+| ------------------------ | -------------- | ------------------ | ---------------------------- |
+| 🎯 **Decision Accuracy** | >90%           | **95% confidence** | +5% over target              |
+| ⚡ **Response Time**     | <5s            | **<2 seconds**     | **99.8% faster** than manual |
+| 🛡️ **System Stability**  | >99%           | **100% uptime**    | Zero failures                |
+| 🔄 **Coverage**          | Business hours | **24/7 automated** | **300% more coverage**       |
 
 </div>
 
@@ -46,6 +46,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 <td width="50%">
 
 #### 👨‍💼 **Manual Operations**
+
 - 🐌 **5-15 min** detection time
 - 🕒 **Business hours** only
 - 🎯 **Variable** accuracy by operator
@@ -55,6 +56,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 <td width="50%">
 
 #### 🤖 **AI-Powered System**
+
 - ⚡ **<2 seconds** detection time
 - 🌍 **24/7** automated coverage
 - 🎯 **95%** consistent accuracy
@@ -79,6 +81,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 <td width="50%">
 
 ### 🧠 **Real AI Intelligence**
+
 - **Genuine Gemini LLM** integration
 - **Intelligent reasoning** with 95% confidence
 - **Smart process matching** with synonyms
@@ -88,6 +91,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 <td width="50%">
 
 ### 🏗️ **Production Architecture**
+
 - **7-service microservices** deployment
 - **Container-native** with Docker Compose
 - **Enterprise monitoring** stack
@@ -102,6 +106,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 ## 🚀 **Get Started in 3 Minutes**
 
 ### **Prerequisites**
+
 ```bash
 ✅ Docker Desktop (Windows/Mac/Linux)
 ✅ 8GB+ RAM (16GB recommended)
@@ -109,6 +114,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 ```
 
 ### **Installation**
+
 ```bash
 # 1️⃣ Clone & Setup
 git clone <your-repo-url>
@@ -122,21 +128,23 @@ echo "GEMINI_API_KEY=your_api_key_here" >> .env
 docker-compose up -d --build
 
 # 4️⃣ Validate Everything Works
-./validate.sh
+docker compose ps  # Verify all services are running
+curl http://localhost:8080/health  # Check AI Agent
+curl http://localhost:5000/health  # Check Target App
 ```
 
 ### **🎉 That's it! Access your AIOps system:**
 
 <div align="center">
 
-| Service | URL | Purpose |
-|---------|-----|---------|
+| Service                  | URL                                       | Purpose                          |
+| ------------------------ | ----------------------------------------- | -------------------------------- |
 | 📊 **Grafana Dashboard** | [`localhost:3000`](http://localhost:3000) | Real-time monitoring & analytics |
-| 📈 **Prometheus** | [`localhost:9090`](http://localhost:9090) | Metrics & query interface |
-| 🚨 **AlertManager** | [`localhost:9093`](http://localhost:9093) | Alert management console |
-| 🤖 **AI Agent** | [`localhost:8080`](http://localhost:8080) | Agent health & decision logs |
+| 📈 **Prometheus**        | [`localhost:9090`](http://localhost:9090) | Metrics & query interface        |
+| 🚨 **AlertManager**      | [`localhost:9093`](http://localhost:9093) | Alert management console         |
+| 🤖 **AI Agent**          | [`localhost:8080`](http://localhost:8080) | Agent health & decision logs     |
 
-*Default Grafana login: `admin` / `admin123`*
+_Default Grafana login: `admin` / `admin123`_
 
 </div>
 
@@ -183,6 +191,7 @@ docker-compose up -d --build
 </div>
 
 **🔧 Tech Stack:**
+
 - **AI**: Google Gemini API (configurable model)
 - **Backend**: Python Flask + Docker API
 - **Monitoring**: Prometheus + Grafana + AlertManager
@@ -204,7 +213,9 @@ docker-compose up -d --build
 <td width="33%" align="center">
 
 ### 📊 **Scenario 1**
+
 #### Baseline Assessment
+
 **🎯 Objective:** Measure AI overhead<br/>
 **⚡ Method:** Resource monitoring<br/>
 **🏆 Result:** <150MB, <5% CPU
@@ -213,7 +224,9 @@ docker-compose up -d --build
 <td width="33%" align="center">
 
 ### 🌐 **Scenario 2**
+
 #### DDoS Response
+
 **🎯 Objective:** Attack mitigation<br/>
 **⚡ Method:** High request flood<br/>
 **🏆 Result:** Perfect rate limiting
@@ -222,7 +235,9 @@ docker-compose up -d --build
 <td width="33%" align="center">
 
 ### 🔥 **Scenario 3**
+
 #### CPU Stress Management
+
 **🎯 Objective:** Process management<br/>
 **⚡ Method:** stress-ng load test<br/>
 **🏆 Result:** 100% accurate targeting
@@ -232,13 +247,16 @@ docker-compose up -d --build
 </table>
 
 ### **🎬 Run Live Demo**
+
 ```bash
-# Launch comprehensive testing suite
-./run_enhanced_tests.sh
+# Launch comprehensive testing suite (all 3 demos)
+cd demos
+./run-all-demos.sh
 
 # Or test individual scenarios
-cd loadtest && locust -f locustfile.py --host=http://localhost:5000
-docker exec target-app stress-ng --cpu 2 --timeout 30s
+cd demos/demo1-baseline && ./run.sh  # Baseline assessment
+cd demos/demo2-ddos && ./run.sh      # DDoS attack simulation
+cd demos/demo3-cpu-stress && ./run.sh # CPU stress auto-remediation
 ```
 
 ---
@@ -253,10 +271,14 @@ DoAn/
 ├── 📋 Documentation
 │   ├── README.md                    ← You are here!
 │   ├── PROJECT_PLAN.md              ← 8-week methodology
-│   └── COMPREHENSIVE_TEST_REPORT.md ← Complete results
-├── 🧪 Testing & Validation
-│   ├── validate.sh                  ← Health check (25+ tests)
-│   ├── run_enhanced_tests.sh        ← Performance testing
+│   └── DEMO_VERIFICATION_REPORT.md  ← Demo validation results
+├── 🧪 Interactive Demos
+│   ├── demos/
+│   │   ├── README.md               ← Demo suite overview
+│   │   ├── run-all-demos.sh        ← Run all 3 demos sequentially
+│   │   ├── demo1-baseline/         ← Performance assessment
+│   │   ├── demo2-ddos/             ← DDoS attack response
+│   │   └── demo3-cpu-stress/       ← Auto-remediation
 │   └── loadtest/
 │       ├── locustfile.py           ← DDoS simulation
 │       └── stress.sh               ← CPU stress testing
@@ -305,6 +327,7 @@ curl -X POST http://localhost:8080/webhook \
 ### **Common Issues & Quick Fixes**
 
 #### 🔴 **Target DOWN in Prometheus**
+
 ```bash
 docker-compose ps | grep target-app          # Check status
 docker-compose restart target-app            # Restart if needed
@@ -312,6 +335,7 @@ curl http://localhost:9090/api/v1/targets    # Verify targets
 ```
 
 #### 🔴 **AI Agent Not Responding**
+
 ```bash
 curl http://localhost:8080/health             # Check health
 docker logs aiops-agent --tail 20            # Check logs
@@ -319,6 +343,7 @@ docker exec aiops-agent env | grep GEMINI    # Verify API key
 ```
 
 #### 🔴 **Alerts Not Firing**
+
 ```bash
 # Validate alert rules syntax
 docker exec prometheus /bin/promtool check rules /etc/prometheus/alert.rules.yml

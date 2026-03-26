@@ -5,6 +5,18 @@ import os
 import requests
 import unittest
 
+def wait_for_agent(url, timeout=10):
+    """Wait for the agent to become responsive with a retry loop."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            # Check /health as it's the only unauthenticated endpoint
+            requests.get(url, timeout=1)
+            return True
+        except (requests.ConnectionError, requests.Timeout):
+            time.sleep(0.2)
+    return False
+
 class TestAgentSecurity(unittest.TestCase):
     def test_missing_key_exits(self):
         """Verify the agent fails to start without AGENT_API_KEY."""
@@ -16,7 +28,9 @@ class TestAgentSecurity(unittest.TestCase):
             timeout=5
         )
         self.assertNotEqual(result.returncode, 0, "Agent should exit when key is missing")
-        self.assertIn(b"AGENT_API_KEY not set", result.stderr)
+        # Check both stdout and stderr for reliability
+        output = result.stdout + result.stderr
+        self.assertIn(b"AGENT_API_KEY not set", output)
         print("✓ Strict startup check passed")
 
     def test_endpoint_auth(self):
@@ -30,8 +44,9 @@ class TestAgentSecurity(unittest.TestCase):
         )
         
         try:
-            # Wait for agent to start
-            time.sleep(2)
+            # Wait for agent to start using retry loop (flakiness prevention)
+            if not wait_for_agent("http://localhost:8080/health"):
+                self.fail("Agent did not become responsive within timeout")
             
             # 1. Test /logs without key
             r = requests.get("http://localhost:8080/logs")

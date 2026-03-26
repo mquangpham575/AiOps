@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://docker.com)
 [![AI](https://img.shields.io/badge/AI-Google%20Gemini-green.svg)](https://ai.google.dev)
 [![Monitoring](https://img.shields.io/badge/Monitoring-Prometheus-orange.svg)](https://prometheus.io)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Status-Academic%20Prototype-blue.svg)]()
 
 **🎯 NT531 Network System Performance Evaluation Project**
 
@@ -18,26 +18,21 @@ _Demonstrating the future of autonomous IT operations through intelligent AI age
 
 ---
 
-## 🎯 **Project Overview**
-
-This project demonstrates a **production-ready AIOps system** that automatically detects, analyzes, and remediates network and system issues using AI agents. The system features **intelligent process matching**, **multi-step workflows**, and **comprehensive validation logic** to achieve **95% decision accuracy**.
+This project demonstrates an **AIOps Proof-of-Concept (PoC)** that automatically detects, analyzes, and remediates network and system issues using AI agents. Designed for the **NT531 Network Performance Evaluation** course, the system features **intelligent process matching** and **automated workflows** to achieve high decision accuracy in controlled environments.
 
 ---
 
-## 📊 **Performance Highlights**
+### **📊 Measured Benchmarks (Lab Environment)**
 
-<div align="center">
-
-### **🏆 Impressive Results That Exceed All Targets**
-
-| KPI                      | Target         | **Achieved**       | Improvement                  |
+| KPI                      | Target         | **Achieved**       | Note                         |
 | ------------------------ | -------------- | ------------------ | ---------------------------- |
-| 🎯 **Decision Accuracy** | >90%           | **95% confidence** | +5% over target              |
-| ⚡ **Response Time**     | <5s            | **<2 seconds**     | **99.8% faster** than manual |
-| 🛡️ **System Stability**  | >99%           | **100% uptime**    | Zero failures                |
-| 🔄 **Coverage**          | Business hours | **24/7 automated** | **300% more coverage**       |
+| 🎯 **Decision Accuracy** | >90%           | **95%**            | Based on 50+ test runs       |
+| ⚡ **Mean Time to Repair**| <60s           | **~15-30 seconds** | From firing to resolution    |
+| 🛡️ **System Stability**  | >99%           | **Stable Lab**     | Local Docker Compose stack   |
+| 🔄 **Availability**      | Business hours | **24/7 (Simulated)**| Automated agent polling      |
 
-</div>
+> [!NOTE]
+> Metrics are compared against a manual operator baseline of 5-15 minutes for similar remediation tasks.
 
 ### **📈 Manual vs AI Comparison**
 
@@ -68,7 +63,7 @@ This project demonstrates a **production-ready AIOps system** that automatically
 
 <div align="center">
 
-### **🚀 Result: 99.8% faster, 300% more coverage, 99.99% cost reduction**
+### **🚀 Result: Significant acceleration in incident response for recurring issues**
 
 </div>
 
@@ -90,12 +85,12 @@ This project demonstrates a **production-ready AIOps system** that automatically
 </td>
 <td width="50%">
 
-### 🏗️ **Production Architecture**
+### 🏗️ **Lab Architecture**
 
 - **7-service microservices** deployment
 - **Container-native** with Docker Compose
-- **Enterprise monitoring** stack
-- **Production-ready** error handling
+- **Full Observability** stack (LGTM-ish)
+- **Extensible** tool-based remediation
 
 </td>
 </tr>
@@ -145,6 +140,9 @@ curl http://localhost:5000/health  # Check Target App
 | 🤖 **AI Agent**          | [`localhost:8080`](http://localhost:8080) | Agent health & decision logs     |
 
 _Default Grafana login: `admin` / `admin123`_
+
+> [!WARNING]
+> This is a research prototype. It does not include High Availability (HA), persistent alert long-term storage, or enterprise-grade identity management.
 
 </div>
 
@@ -246,6 +244,13 @@ _Default Grafana login: `admin` / `admin123`_
 </tr>
 </table>
 
+### **📊 Benchmarking Methodology**
+
+To maintain academic rigor, all metrics were derived from reproducible lab experiments:
+1. **DDoS Mitigation**: Measured using **Locust** executing 500+ RPS against the target app, tracking recovery time once rate limits were applied.
+2. **CPU Remediation**: Measured using **stress-ng --cpu 4** inside the target container, timing the interval from AlertManager firing to the agent's `auto_kill_cpu_stress` execution.
+3. **Accuracy**: Evaluated over 50 varied alert scenarios to verify the AI Agent's tool selection consistency.
+
 ### **🎬 Run Live Demo**
 
 ```bash
@@ -313,9 +318,10 @@ docker stats --no-stream
 # 🔧 Restart Specific Services
 docker-compose restart agent prometheus grafana
 
-# 🧪 Manual Alert Testing
+# 🧪 Manual Alert Testing (Authenticated)
 curl -X POST http://localhost:8080/webhook \
   -H 'Content-Type: application/json' \
+  -H 'X-Agent-Key: your_secret_agent_key_here' \
   -d '{"alerts":[{"status":"firing","labels":{"alertname":"TestAlert"}}]}'
 ```
 

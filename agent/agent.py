@@ -17,7 +17,10 @@ Endpoints:
   GET  /metrics   ← Prometheus metrics của agent
 """
 
-import os, json, time, logging
+import os
+import json
+import time
+import logging
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import google.generativeai as genai
@@ -65,9 +68,15 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(GEMINI_MODEL)
 
-# ── Throttle: configurable interval between Gemini calls ───────────
+# ── Throttle & Auth ───────────────────────────────────────────
 _last_llm_call: float = 0.0
 MIN_INTERVAL: float = float(os.environ.get("AI_THROTTLE_INTERVAL", "3.0"))
+AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
+
+if not AGENT_API_KEY:
+    logger.warning("AGENT_API_KEY not set! /webhook is UNPROTECTED.")
+else:
+    logger.info("API Key authentication enabled for /webhook")
 
 # ── Action log: lưu 100 action gần nhất ─────────────────────
 action_log: list[dict] = []
@@ -220,6 +229,12 @@ def webhook():
     Endpoint nhận webhook từ AlertManager.
     Xử lý từng alert, gọi Gemini, thực thi tool.
     """
+    # ── Authentication check ──────────────────────────────────
+    if AGENT_API_KEY:
+        provided_key = request.headers.get("X-Agent-Key")
+        if provided_key != AGENT_API_KEY:
+            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
+            return jsonify({"error": "Unauthorized"}), 401
     try:
         payload = request.get_json(force=True, silent=True)
         if not payload:

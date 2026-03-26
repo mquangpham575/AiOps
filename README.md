@@ -309,8 +309,9 @@ DoAn/
 <summary><b>🔧 System Management Commands</b></summary>
 
 ```bash
-# 🔍 Monitor AI Agent Performance
-curl http://localhost:8080/logs?limit=5 | jq '.[] | {alert, action, confidence}'
+# 🔍 Monitor AI Agent Performance (Authenticated)
+curl -H 'X-Agent-Key: your_secret_agent_key_here' \
+  "http://localhost:8080/logs?limit=5" | jq '.[] | {alert, action, confidence}'
 
 # 📊 Check System Resources
 docker stats --no-stream

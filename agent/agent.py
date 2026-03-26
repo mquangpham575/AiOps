@@ -21,6 +21,9 @@ import os
 import json
 import time
 import logging
+import hmac
+import functools
+import sys
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import google.generativeai as genai
@@ -73,10 +76,24 @@ _last_llm_call: float = 0.0
 MIN_INTERVAL: float = float(os.environ.get("AI_THROTTLE_INTERVAL", "3.0"))
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 
-if not AGENT_API_KEY:
-    logger.warning("AGENT_API_KEY not set! /webhook is UNPROTECTED.")
-else:
-    logger.info("API Key authentication enabled for /webhook")
+if not AGENT_API_KEY or AGENT_API_KEY == "your_secret_agent_key_here":
+    logger.critical("AGENT_API_KEY not set or using default value! Agent must be secured to start.")
+    sys.exit(1)
+
+logger.info("API Key authentication enabled for /webhook and /logs")
+
+
+def require_api_key(f):
+    """Decorator to require X-Agent-Key header for access."""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        provided = request.headers.get("X-Agent-Key", "")
+        # Secure comparison to prevent timing attacks
+        if not hmac.compare_digest(provided, AGENT_API_KEY):
+            logger.warning(f"Unauthorized access attempt from {repr(request.remote_addr)}")
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 # ── Action log: lưu 100 action gần nhất ─────────────────────
 action_log: list[dict] = []
@@ -224,17 +241,12 @@ Hãy phân tích và quyết định hành động khắc phục phù hợp.
 
 
 @app.route("/webhook", methods=["POST"])
+@require_api_key
 def webhook():
     """
     Endpoint nhận webhook từ AlertManager.
     Xử lý từng alert, gọi Gemini, thực thi tool.
     """
-    # ── Authentication check ──────────────────────────────────
-    if AGENT_API_KEY:
-        provided_key = request.headers.get("X-Agent-Key")
-        if provided_key != AGENT_API_KEY:
-            logger.warning(f"Unauthorized access attempt from {request.remote_addr}")
-            return jsonify({"error": "Unauthorized"}), 401
     try:
         payload = request.get_json(force=True, silent=True)
         if not payload:
@@ -356,6 +368,7 @@ def health():
 
 
 @app.route("/logs")
+@require_api_key
 def logs():
     """Trả về 50 action gần nhất — dùng để xem trong video demo."""
     limit = int(request.args.get("limit", 50))

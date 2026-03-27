@@ -157,7 +157,7 @@ To maintain academic rigor, the following experimental setups were used:
 2. **CPU Management**: Triggered using `stress-ng --cpu 4` within the target container, measuring the latency from Prometheus alert detection to successful tool execution.
 3. **Logic Verification**: Evaluated through 50+ diverse alert scenarios to verify the consistency of the model's reasoning and tool selection.
 
----
+**Monitoring Scope & Constraints**: This PoC focuses on high-level system metrics (CPU, RAM, Latency). It does not currently implement tracking for packet loss (%), which would require kernel-level instrumentation like eBPF. For throughput monitoring, while not explicitly configured in the default alerts, cAdvisor natively provides `container_network_receive_bytes_total`, which offers a straightforward path for adding byte-level traffic analysis without additional instrumentation.
 
 ## Operations and Testing
 

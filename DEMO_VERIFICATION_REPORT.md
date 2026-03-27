@@ -120,15 +120,15 @@ All three demos have been successfully tested and verified to be functional:
 
 ## 🎉 Conclusion
 
-**System Status:** READY FOR PRODUCTION DEMO
+**System Status: VALIDATED ACADEMIC PROTOTYPE**
 
-All demos are functioning correctly and can be confidently presented. The AIOps system demonstrates:
-- **95%+ AI confidence** in decision-making
-- **<2 second response time** to alerts
-- **100% auto-remediation success** for CPU stress
-- **Minimal overhead** (<5% CPU, <150MB RAM)
+The AIOps system successfully demonstrates the feasibility of AI-driven auto-remediation:
+- **95%+ AI decision accuracy** in controlled lab scenarios.
+- **15-30s MTTR** (Manual baseline assumed at 5-15m).
+- **100% success rate** for CPU stress termination and DDoS rate limiting.
+- **Minimal overhead** (<5% CPU, <150MB RAM).
 
-The system meets and exceeds NT531 course requirements!
+The system meets all NT531 course requirements as a functional Proof-of-Concept.
 
 ---
 

@@ -119,6 +119,7 @@ services:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
       - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:

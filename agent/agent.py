@@ -88,6 +88,11 @@ def require_api_key(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
         provided = request.headers.get("X-Agent-Key", "")
+        # Also support Authorization: Bearer <key> (common in AlertManager/webhooks)
+        auth_header = request.headers.get("Authorization", "")
+        if not provided and auth_header.startswith("Bearer "):
+            provided = auth_header.split(" ")[-1]
+        
         # Secure comparison to prevent timing attacks
         if not hmac.compare_digest(provided, AGENT_API_KEY):
             logger.warning(f"Unauthorized access attempt from {repr(request.remote_addr)}")
@@ -376,5 +381,6 @@ def logs():
 
 
 if __name__ == "__main__":
-    logger.info("AIOps Agent starting on port 8080...")
-    app.run(host="0.0.0.0", port=8080, threaded=True)
+    logger.info(f"AIOps Agent starting (name={__name__}) on port 8080...")
+    # Explicitly using 0.0.0.0 to bind to all interfaces in container
+    app.run(host="0.0.0.0", port=8080, threaded=True, debug=False)

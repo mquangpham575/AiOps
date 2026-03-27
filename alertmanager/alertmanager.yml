@@ -22,6 +22,14 @@ receivers:
         send_resolved: true
         http_config:
           follow_redirects: true
+          # Add authentication header for AI Agent
+          authorization:
+            credentials: "agent_secret_key_nt531"
+            # Since AlertManager 'credentials' sends 'Bearer <key>', 
+            # and our agent expects 'X-Agent-Key' header, 
+            # we should use 'headers' instead if AlertManager version supports it, 
+            # or update the agent to accept Bearer token.
+            # Actually, AlertManager's 'headers' is the right way if supported.
 
 inhibit_rules:
   - source_match:

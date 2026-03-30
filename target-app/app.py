@@ -72,13 +72,16 @@ def memory_stress():
     except (ValueError, TypeError):
         return jsonify({"error": "mb must be an integer"}), 400
 
-    mb = min(mb, 100)  # safety cap: never allocate more than 100MB per request
+    mb = max(1, min(mb, 100))  # clamp: 1MB minimum, 100MB maximum
 
     # Allocate memory
     _buffer = bytearray(mb * 1024 * 1024)
 
     # Hold it for 10 seconds to sustain pressure under concurrent Locust load
-    hold_s = int(os.environ.get("MEMORY_HOLD_SECONDS", "10"))
+    try:
+        hold_s = int(os.environ.get("MEMORY_HOLD_SECONDS", "10"))
+    except (ValueError, TypeError):
+        hold_s = 10
     time.sleep(hold_s)
 
     # Release: let _buffer go out of scope

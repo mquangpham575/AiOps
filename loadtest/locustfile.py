@@ -23,6 +23,7 @@ class NormalUser(HttpUser):
     """User thông thường — weight cao hơn."""
     weight = 1
     wait_time = between(0.5, 1.5)
+    tags = ["ddos", "baseline"]
 
     @task(3)
     def index(self):
@@ -37,6 +38,7 @@ class AttackUser(HttpUser):
     """Simulated attacker — request liên tục không nghỉ."""
     weight = 3
     wait_time = between(0.05, 0.2)
+    tags = ["ddos"]
 
     @task
     def flood_index(self):
@@ -49,6 +51,27 @@ class AttackUser(HttpUser):
     @task
     def flood_cpu(self):
         self.client.get("/cpu", name="[ATTACK] GET /cpu")
+
+
+class MemoryStressUser(HttpUser):
+    """Scenario 4: Memory exhaustion — repeated /memory calls sustain host memory pressure."""
+    weight = 2
+    wait_time = between(0.1, 0.3)
+    tags = ["memory"]
+
+    @task
+    def exhaust_memory(self):
+        self.client.get("/memory?mb=20", name="[MEMORY] GET /memory")
+
+
+# ── Scenario usage ──────────────────────────────────────────────────────────
+# Scenario 2 (DDoS):   locust -f locustfile.py --host=http://localhost:5000 \
+#                        --users 500 --spawn-rate 50 --run-time 3m --headless \
+#                        --tags ddos
+# Scenario 4 (Memory): locust -f locustfile.py --host=http://localhost:5000 \
+#                        --users 20 --spawn-rate 5 --run-time 3m --headless \
+#                        --tags memory
+# Without --tags, all user classes run simultaneously.
 
 
 @events.test_start.add_listener

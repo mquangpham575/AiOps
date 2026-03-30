@@ -53,13 +53,13 @@ groups:
       - alert: HighMemoryUsage
         expr: |
           (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
-          / node_memory_MemTotal_bytes * 100 > 85
-        for: 30s
+          / node_memory_MemTotal_bytes * 100 > 75
+        for: 20s
         labels:
-          severity: warning
+          severity: critical
           scenario: memory_stress
         annotations:
-          summary: "RAM can day"
+          summary: "RAM sắp đầy"
           description: "Memory usage: {{ $value | humanize }}%"
 
       - alert: ContainerHighCPU

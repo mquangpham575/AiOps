@@ -41,8 +41,12 @@ After a day of heavy development (25 commits), the codebase has accumulated:
 | `__pycache__/` (root) | Build artifact, must not be tracked |
 | `DEMO_EXECUTION_REPORT.md` | 31KB stale report — superseded by `demo_runner.py` CSV output |
 | `DEMO_VERIFICATION_REPORT.md` | Stale snapshot, no longer accurate |
-| `demos/combined_results/full_demo_report_20260324_*.txt` | Old run; keep 20260330 only |
-| `demos/combined_results/full_demo_report_20260327_*.txt` (all 5) | Old runs; keep 20260330 only |
+| `demos/combined_results/full_demo_report_20260324_105254.txt` | Old run; keep latest (20260327_012438) only |
+| `demos/combined_results/full_demo_report_20260327_010132.txt` | Old run; keep latest (20260327_012438) only |
+| `demos/combined_results/full_demo_report_20260327_010241.txt` | Old run; keep latest (20260327_012438) only |
+| `demos/combined_results/full_demo_report_20260327_011522.txt` | Old run; keep latest (20260327_012438) only |
+| `demos/combined_results/full_demo_report_20260327_012120.txt` | Old run; keep latest (20260327_012438) only |
+| `demos/combined_results/full_demo_report_20260327_012412.txt` | Old run; keep latest (20260327_012438) only |
 | `demos/demo1-baseline/results/baseline_20260327_*.txt` (2 files) | Old runs; keep 20260330 only |
 | `demos/demo2-ddos/results/attack_responses_20260324_*.log` | Old run; keep 20260330 only |
 | `demos/demo2-ddos/results/ddos_20260324_*.txt` | Old run; keep 20260330 only |
@@ -52,7 +56,7 @@ After a day of heavy development (25 commits), the codebase has accumulated:
 | `demos/demo3-cpu-stress/results/cpu_stress_20260324_113454.txt` | Old run; keep 20260330 only |
 
 **Files kept (latest per scenario):**
-- `demos/combined_results/full_demo_report_20260330_131036.txt` (approximate — keep the 20260330 file)
+- `demos/combined_results/full_demo_report_20260327_012438.txt` (latest combined report)
 - `demos/demo1-baseline/results/baseline_20260330_131036.txt`
 - `demos/demo2-ddos/results/attack_responses_20260330_131619.log`
 - `demos/demo2-ddos/results/ddos_20260330_131619.txt`

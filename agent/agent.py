@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify
 import google.generativeai as genai
 
 from tools import TOOLS, TOOLS_DESCRIPTION
+import requests as _requests  # aliased to avoid collision with tools.requests
 
 # ── Logging setup ────────────────────────────────────────────
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -65,6 +66,7 @@ except Exception as e:
 # ── Gemini setup ─────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemma-3-1b-it")
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not set! Agent will run in dry-run mode.")
 
@@ -103,45 +105,115 @@ def require_api_key(f):
 # ── Action log: lưu 100 action gần nhất ─────────────────────
 action_log: list[dict] = []
 
+# ── Prometheus query map per scenario ────────────────────────
+_PROM_QUERIES = {
+    "cpu_stress": {
+        "cpu_pct":       "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
+        "load1":         "node_load1",
+        "load5":         "node_load5",
+        "container_cpu": "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100",
+    },
+    "ddos": {
+        "req_rate":      "rate(container_network_receive_packets_total{name='target-app'}[30s])",
+        "latency_s":     "rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m]) / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m])",
+        "network_bytes": "rate(container_network_receive_bytes_total{name='target-app'}[30s])",
+    },
+    "memory_stress": {
+        "memory_pct":         "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
+        "memory_available_b": "node_memory_MemAvailable_bytes",
+        "container_memory_b": "container_memory_usage_bytes{name='target-app'}",
+    },
+    "system_load": {
+        "load1":  "node_load1",
+        "load5":  "node_load5",
+        "load15": "node_load15",
+        "procs":  "node_procs_running",
+    },
+}
+
+_ALERT_SCENARIO_MAP = {
+    "HighCPUUsage":       "cpu_stress",
+    "ContainerHighCPU":   "cpu_stress",
+    "CriticalCPUStress":  "cpu_stress",
+    "HighRequestRate":    "ddos",
+    "HighRequestLatency": "ddos",
+    "HighMemoryUsage":    "memory_stress",
+    "HighSystemLoad":     "system_load",
+    "CriticalSystemLoad": "system_load",
+}
+
+
+def _prom_query(query: str) -> float | str:
+    """Run a single Prometheus instant query. Returns float or 'N/A' on any failure."""
+    try:
+        resp = _requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": query},
+            timeout=3,
+        )
+        data = resp.json()
+        if data["status"] == "success" and data["data"]["result"]:
+            return float(data["data"]["result"][0]["value"][1])
+    except Exception as e:
+        logger.warning(f"[enrich] Prometheus query failed: {e}")
+    return "N/A"
+
+
+def enrich_alert_context(alert: dict) -> dict:
+    """
+    Phase 1: Query Prometheus for live metrics relevant to this alert's scenario.
+    Returns a flat dict of metric values (floats or 'N/A' on timeout).
+
+    Example:
+        ctx = enrich_alert_context({"labels": {"scenario": "cpu_stress"}, ...})
+        # ctx == {"cpu_pct": 94.2, "load1": 3.8, "load5": 2.1, "container_cpu": 91.0}
+    """
+    labels    = alert.get("labels", {})
+    scenario  = labels.get("scenario", "")
+    alertname = labels.get("alertname", "")
+
+    # Fall back to alertname mapping if scenario label is missing or unknown
+    if scenario not in _PROM_QUERIES:
+        scenario = _ALERT_SCENARIO_MAP.get(alertname, "")
+
+    queries = _PROM_QUERIES.get(scenario, {})
+    ctx: dict = {}
+
+    for key, query in queries.items():
+        raw = _prom_query(query)
+        # Convert byte-level metrics to MB for readability
+        if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
+            new_key = key.replace("_b", "_mb")
+            ctx[new_key] = round(raw / (1024 * 1024), 1)
+        # Convert latency from seconds to milliseconds
+        elif key == "latency_s" and raw != "N/A":
+            ctx["latency_ms"] = round(raw * 1000, 1)
+        else:
+            ctx[key] = raw if raw == "N/A" else round(raw, 2)
+
+    logger.info(f"[enrich] scenario={scenario!r} context={ctx}")
+    return ctx
+
+
 # ── System prompt cho AI Agent ───────────────────────────────
-SYSTEM_PROMPT = f"""Bạn là một AI Agent chuyên vận hành hệ thống mạng (AIOps).
-Nhiệm vụ: khi nhận cảnh báo, phân tích và quyết định hành động khắc phục TỰ ĐỘNG.
+SYSTEM_PROMPT = f"""You are an AIOps agent responsible for automated IT infrastructure remediation.
+When you receive an alert with live system metrics, analyze the data and choose the most appropriate action.
 
 {TOOLS_DESCRIPTION}
 
-QUY TẮC PHẢN HỒI (BẮT BUỘC):
-- Chỉ trả về JSON, không có text ngoài JSON.
-- Format chính xác:
-{{
-  "reasoning": "Giải thích ngắn gọn tại sao chọn hành động này (1-2 câu)",
-  "action": "tên_tool hoặc null nếu không cần hành động",
-  "params": {{"tham_số": "giá_trị"}},
-  "confidence": 0.0-1.0
-}}
+RESPONSE RULES (MANDATORY):
+- Respond with ONLY a JSON object — no text before or after.
+- Schema: {{"reasoning": "<1-2 sentence analysis of the metrics>", "action": "<tool_name or null>", "params": {{}}, "confidence": <0.0-1.0>}}
+- Use null action only if the metrics clearly show the alert has already self-resolved.
+- Base your reasoning on the actual metric VALUES provided — mention the numbers.
 
-LUẬT TUYỆT ĐỐI - KHÔNG ĐƯỢC VI PHẠM:
+DECISION GUIDELINES:
+- CPU > 80% or load1 > 3.0 with container_cpu > 70%: use auto_kill_cpu_stress
+- req_rate spike with latency_ms > 1500: use apply_rate_limit
+- memory_pct > 75% or memory_available_mb < 300: use restart_service
+- load1 > 4.0 with no clear process cause: use reduce_system_load
 
-🚨 CPU STRESS RULES (HighCPUUsage, HighSystemLoad, ContainerHighCPU, CriticalCPUStress):
-**action**: "auto_kill_cpu_stress"
-**params**: {{"container_name": "target-app", "cpu_threshold": 80.0}}
-FORBIDDEN: get_top_processes, kill_process
-
-🚨 DDOS RULES (HighRequestRate, HighRequestLatency):
-**action**: "apply_rate_limit"
-**params**: {{"interface": "eth0", "rate": "50/sec"}}
-
-🚨 SYSTEM OVERLOAD:
-**action**: "reduce_system_load" or "restart_service"
-
-ONLY VALID RESPONSES:
-
-CPU Stress Alert:
-{{"reasoning": "CPU stress detected, using auto_kill_cpu_stress", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80.0}}, "confidence": 0.95}}
-
-DDoS Alert:
-{{"reasoning": "DDoS attack detected, applying rate limit", "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}, "confidence": 0.9}}
-
-NEVER USE: get_top_processes or kill_process for CPU stress
+IMPORTANT: check_system_load() and reduce_system_load() take NO parameters.
 """
 
 
@@ -222,26 +294,36 @@ def call_gemini(prompt: str) -> tuple[dict, float]:
         }, latency
 
 
-def build_prompt(alert: dict) -> str:
-    """Xây dựng prompt từ alert payload của AlertManager."""
+def build_prompt(alert: dict, context: dict | None = None) -> str:
+    """Build the user-facing prompt for Gemini, enriched with live metrics.
+
+    Args:
+        alert:   AlertManager alert dict with labels, annotations, status
+        context: flat dict of live Prometheus metrics from enrich_alert_context()
+    """
     alert_name  = alert.get("labels", {}).get("alertname", "Unknown")
     severity    = alert.get("labels", {}).get("severity", "unknown")
     scenario    = alert.get("labels", {}).get("scenario", "unknown")
     summary     = alert.get("annotations", {}).get("summary", "")
     description = alert.get("annotations", {}).get("description", "")
-    starts_at   = alert.get("startsAt", "")
     status      = alert.get("status", "firing")
 
-    return f"""=== CẢNH BÁO HỆ THỐNG ===
-Tên cảnh báo : {alert_name}
-Mức độ       : {severity}
-Kịch bản     : {scenario}
-Trạng thái   : {status}
-Bắt đầu lúc  : {starts_at}
-Tóm tắt      : {summary}
-Chi tiết      : {description}
+    if context:
+        metrics_lines = "\n".join(f"  {k}: {v}" for k, v in context.items())
+        metrics_section = f"\nCurrent system metrics (live from Prometheus):\n{metrics_lines}\n"
+    else:
+        metrics_section = "\n(No live metrics available — decide based on alert context only)\n"
 
-Hãy phân tích và quyết định hành động khắc phục phù hợp.
+    return f"""=== CẢNH BÁO HỆ THỐNG ===
+Alert name : {alert_name}
+Severity   : {severity}
+Scenario   : {scenario}
+Status     : {status}
+Summary    : {summary}
+Details    : {description}
+{metrics_section}
+Analyze the metrics above and choose the single best remediation action.
+Respond ONLY with valid JSON matching the schema: {{reasoning, action, params, confidence}}
 """
 
 

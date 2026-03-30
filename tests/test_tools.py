@@ -46,3 +46,14 @@ def test_post_grafana_annotation_failure(monkeypatch):
 
     assert "ERROR" in result or "error" in result.lower()
     # Must not raise — Grafana failure is non-fatal
+
+
+def test_utility_tools_not_in_agent_tools():
+    """get_prometheus_metrics and validate_container_exists are
+    internal utilities — not AI-callable tools.
+    They remain as functions but must NOT appear in TOOLS."""
+    assert "get_prometheus_metrics" not in tools.TOOLS
+    assert "validate_container_exists" not in tools.TOOLS
+    # Confirm the functions still exist as utilities
+    assert callable(tools.get_prometheus_metrics)
+    assert callable(tools.validate_container_exists)

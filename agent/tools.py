@@ -20,6 +20,8 @@ DEFAULT_INTERFACE = os.environ.get("DEFAULT_NETWORK_INTERFACE", "eth0")
 DEFAULT_RATE_LIMIT = os.environ.get("DEFAULT_RATE_LIMIT", "50/sec")
 RATE_LIMIT_BURST = os.environ.get("RATE_LIMIT_BURST", "200")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
+GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000")
+GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN", "")
 
 
 def _get_docker():
@@ -451,17 +453,54 @@ def validate_container_exists(container_name: str = None) -> str:
         return f"ERROR: {e}"
 
 
+# ── Tool 11: Post Grafana annotation ────────────────────────
+def post_grafana_annotation(text: str, tags: list) -> str:
+    """
+    Post an annotation to all Grafana dashboards marking AI intervention.
+    Called automatically after every tool execution — failure is non-fatal.
+
+    Args:
+        text: annotation text, e.g. "🤖 apply_rate_limit — ddos | CPU:45% MEM:60%"
+        tags: list of tag strings, e.g. ["aiops", "auto-remediation", "ddos"]
+
+    Returns:
+        str: "Annotation posted OK (200)" or "Annotation skipped (no token)" or "ERROR: ..."
+    """
+    if not GRAFANA_TOKEN:
+        logger.warning("[post_grafana_annotation] GRAFANA_TOKEN not set — skipping annotation")
+        return "Annotation skipped (no token)"
+
+    try:
+        response = requests.post(
+            f"{GRAFANA_URL}/api/annotations",
+            json={"text": text, "tags": tags},
+            headers={
+                "Authorization": f"Bearer {GRAFANA_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            timeout=5,
+        )
+        msg = f"Annotation posted OK ({response.status_code})"
+        logger.info(f"[post_grafana_annotation] {msg}: {text[:80]}")
+        return msg
+    except Exception as e:
+        msg = f"ERROR: {e}"
+        logger.warning(f"[post_grafana_annotation] {msg}")
+        return msg
+
+
 TOOLS = {
-    "get_top_processes":    get_top_processes,
-    "kill_process":         kill_process,
-    "block_ip":             block_ip,
-    "restart_service":      restart_service,
-    "get_prometheus_metrics": get_prometheus_metrics,
-    "apply_rate_limit":     apply_rate_limit,
-    "check_system_load":    check_system_load,
-    "reduce_system_load":   reduce_system_load,
-    "auto_kill_cpu_stress": auto_kill_cpu_stress,
+    "get_top_processes":         get_top_processes,
+    "kill_process":              kill_process,
+    "block_ip":                  block_ip,
+    "restart_service":           restart_service,
+    "get_prometheus_metrics":    get_prometheus_metrics,
+    "apply_rate_limit":          apply_rate_limit,
+    "check_system_load":         check_system_load,
+    "reduce_system_load":        reduce_system_load,
+    "auto_kill_cpu_stress":      auto_kill_cpu_stress,
     "validate_container_exists": validate_container_exists,
+    "post_grafana_annotation":   post_grafana_annotation,
 }
 
 TOOLS_DESCRIPTION = f"""
@@ -481,12 +520,11 @@ SYSTEM ANALYSIS:
 - check_system_load(): Kiểm tra system load (NO parameters needed)
 - reduce_system_load(): Giảm system load (NO parameters needed)
 
-ENHANCED TOOLS (NEW):
+ENHANCED TOOLS:
 - auto_kill_cpu_stress(container_name, cpu_threshold): Multi-step workflow tự động kill process CPU cao
 - validate_container_exists(container_name): Kiểm tra container có tồn tại và running không
 
-SMART MATCHING:
-kill_process hỗ trợ synonyms: "stress" -> ["stress-ng", "stress-ng-cpu"], "cpu-stress" -> ["stress-ng"], etc.
+NOTE: post_grafana_annotation is called automatically — do NOT include it in your action response.
 
 IMPORTANT: check_system_load() and reduce_system_load() take NO parameters!
 For CPU stress scenarios, prefer auto_kill_cpu_stress() for best results!

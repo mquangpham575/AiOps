@@ -13,10 +13,10 @@ from flask import Flask, jsonify, Response, request
 
 app = Flask(__name__)
 try:
-    from prometheus_flask_exporter import PrometheusFlaskExporter
-    PrometheusFlaskExporter(app, group_by="endpoint")
+    from prometheus_flask_exporter import PrometheusMetrics
+    PrometheusMetrics(app, group_by="endpoint")
 except Exception as e:
-    print(f"Warning: PrometheusFlaskExporter init failed: {e}")
+    print(f"Warning: PrometheusMetrics init failed: {e}")
     # Fallback: Simple /metrics endpoint if exporter fails
     @app.route("/metrics")
     def metrics():

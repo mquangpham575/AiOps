@@ -10,6 +10,7 @@ import logging
 import requests
 import docker
 import os
+import time
 
 logger = logging.getLogger(__name__)
 _docker_client = None
@@ -343,7 +344,6 @@ def reduce_system_load() -> str:
                 logger.warning(f"[reduce_system_load] Failed to restart {container_name}: {e}")
 
         # 2. Wait a moment for system to settle
-        import time
         time.sleep(2)
 
         # 3. Check load after actions
@@ -490,42 +490,37 @@ def post_grafana_annotation(text: str, tags: list) -> str:
 
 
 TOOLS = {
-    "get_top_processes":         get_top_processes,
-    "kill_process":              kill_process,
-    "block_ip":                  block_ip,
-    "restart_service":           restart_service,
-    "get_prometheus_metrics":    get_prometheus_metrics,
-    "apply_rate_limit":          apply_rate_limit,
-    "check_system_load":         check_system_load,
-    "reduce_system_load":        reduce_system_load,
-    "auto_kill_cpu_stress":      auto_kill_cpu_stress,
-    "validate_container_exists": validate_container_exists,
-    "post_grafana_annotation":   post_grafana_annotation,
+    "get_top_processes":       get_top_processes,
+    "kill_process":            kill_process,
+    "block_ip":                block_ip,
+    "restart_service":         restart_service,
+    "apply_rate_limit":        apply_rate_limit,
+    "check_system_load":       check_system_load,
+    "reduce_system_load":      reduce_system_load,
+    "auto_kill_cpu_stress":    auto_kill_cpu_stress,
+    "post_grafana_annotation": post_grafana_annotation,
 }
 
 TOOLS_DESCRIPTION = f"""
-Available tools (use exact names and correct parameters):
+Available tools grouped by scenario (use ONLY the tools listed for the active scenario):
 
-BASIC TOOLS:
-- get_top_processes(container_name): Xem top CPU process trong container (default: {DEFAULT_CONTAINER})
-- kill_process(container_name, process_name): Kill process theo tên với smart matching (default container: {DEFAULT_CONTAINER})
-- restart_service(container_name): Restart container (default: {DEFAULT_CONTAINER})
-- get_prometheus_metrics(query): Query Prometheus lấy số liệu thực tế
+[scenario=cpu_stress] CPU / process overload:
+- auto_kill_cpu_stress(container_name, cpu_threshold): Multi-step workflow to auto-kill high-CPU processes (preferred)
+- get_top_processes(container_name): Inspect top CPU processes in container (default: {DEFAULT_CONTAINER})
+- kill_process(container_name, process_name): Kill a named process (default container: {DEFAULT_CONTAINER})
 
-NETWORK TOOLS:
-- block_ip(ip): Block IP tấn công bằng iptables
-- apply_rate_limit(interface, rate): Rate limit traffic (default: interface="{DEFAULT_INTERFACE}", rate="{DEFAULT_RATE_LIMIT}")
+[scenario=ddos] Network / request rate attack:
+- apply_rate_limit(interface, rate): Rate-limit incoming traffic via iptables (default: interface="{DEFAULT_INTERFACE}", rate="{DEFAULT_RATE_LIMIT}")
+- block_ip(ip): Block a specific attacking IP via iptables
 
-SYSTEM ANALYSIS:
-- check_system_load(): Kiểm tra system load (NO parameters needed)
-- reduce_system_load(): Giảm system load (NO parameters needed)
+[scenario=memory_stress] Memory exhaustion:
+- restart_service(container_name): Restart container to free memory (default: {DEFAULT_CONTAINER})
+- reduce_system_load(): Emergency load reduction — restarts containers and clears state (NO parameters)
 
-ENHANCED TOOLS:
-- auto_kill_cpu_stress(container_name, cpu_threshold): Multi-step workflow tự động kill process CPU cao
-- validate_container_exists(container_name): Kiểm tra container có tồn tại và running không
+[scenario=system_load] High system load average:
+- reduce_system_load(): Reduce system load — restarts containers and clears state (NO parameters)
+- check_system_load(): Read current load metrics (NO parameters)
 
 NOTE: post_grafana_annotation is called automatically — do NOT include it in your action response.
-
-IMPORTANT: check_system_load() and reduce_system_load() take NO parameters!
-For CPU stress scenarios, prefer auto_kill_cpu_stress() for best results!
+CRITICAL: reduce_system_load() and check_system_load() take NO parameters — params must be {{}}.
 """

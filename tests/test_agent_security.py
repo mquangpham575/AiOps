@@ -34,47 +34,39 @@ class TestAgentSecurity(unittest.TestCase):
         print("✓ Strict startup check passed")
 
     def test_endpoint_auth(self):
-        """Verify /webhook and /logs require authentication."""
-        print("Testing endpoint authentication...")
-        # Start agent in background with a test key
-        test_key = "secure_test_key"
-        proc = subprocess.Popen(
-            [sys.executable, "agent/agent.py"],
-            env={**os.environ, "AGENT_API_KEY": test_key}
-        )
-        
-        try:
-            # Wait for agent to start using retry loop (flakiness prevention)
-            if not wait_for_agent("http://localhost:8080/health"):
-                self.fail("Agent did not become responsive within timeout")
-            
-            # 1. Test /logs without key
-            r = requests.get("http://localhost:8080/logs")
+        """Verify /webhook and /logs require X-Agent-Key authentication."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agent'))
+        import agent as agent_module
+
+        app = agent_module.app
+        app.config["TESTING"] = True
+
+        with app.test_client() as client:
+            # 1. /logs without key → 401
+            r = client.get("/logs")
             self.assertEqual(r.status_code, 401)
-            
-            # 2. Test /logs with wrong key
-            r = requests.get("http://localhost:8080/logs", headers={"X-Agent-Key": "wrong"})
+
+            # 2. /logs with wrong key → 401
+            r = client.get("/logs", headers={"X-Agent-Key": "wrong_key"})
             self.assertEqual(r.status_code, 401)
-            
-            # 3. Test /logs with correct key
-            r = requests.get("http://localhost:8080/logs", headers={"X-Agent-Key": test_key})
+
+            # 3. /logs with correct key (set by conftest.py) → 200
+            r = client.get("/logs", headers={"X-Agent-Key": "test-agent-key-12345"})
             self.assertEqual(r.status_code, 200)
-            
-            # 4. Test /webhook without key
-            r = requests.post("http://localhost:8080/webhook", json={"alerts":[]})
+
+            # 4. /webhook without key → 401
+            r = client.post("/webhook", json={"alerts": []},
+                            content_type="application/json")
             self.assertEqual(r.status_code, 401)
-            
-            # 5. Test /webhook with correct key
-            r = requests.post("http://localhost:8080/webhook", 
-                              headers={"X-Agent-Key": test_key},
-                              json={"alerts":[]})
+
+            # 5. /webhook with correct key and empty alerts → 200
+            r = client.post("/webhook", json={"alerts": []},
+                            headers={"X-Agent-Key": "test-agent-key-12345"},
+                            content_type="application/json")
             self.assertEqual(r.status_code, 200)
-            
-            print("✓ Endpoint authentication passed")
-            
-        finally:
-            proc.terminate()
-            proc.wait()
+
+        print("✓ Endpoint authentication passed")
 
 if __name__ == "__main__":
     unittest.main()

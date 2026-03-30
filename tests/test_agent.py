@@ -102,3 +102,79 @@ def test_build_prompt_no_hardcoded_action(agent_module):
 
     # The prompt should NOT give away the answer as a hardcoded JSON
     assert '"action": "auto_kill_cpu_stress"' not in prompt
+
+
+def test_webhook_two_phase_pipeline(agent_module):
+    """webhook() calls enrich_alert_context before build_prompt (two-phase pipeline)."""
+    from flask import Flask
+
+    payload = {
+        "alerts": [{
+            "labels": {"alertname": "HighCPUUsage", "severity": "critical", "scenario": "cpu_stress"},
+            "annotations": {"summary": "CPU qua tai", "description": "CPU: 94%"},
+            "status": "firing",
+            "startsAt": "2026-03-30T14:00:00Z",
+        }]
+    }
+
+    mock_decision = {
+        "reasoning": "CPU=94.2% with load1=3.8 — kill stress process",
+        "action": "auto_kill_cpu_stress",
+        "params": {"container_name": "target-app", "cpu_threshold": 80.0},
+        "confidence": 0.95,
+    }
+
+    with (
+        patch("agent.enrich_alert_context", return_value={"cpu_pct": 94.2, "load1": 3.8}) as mock_enrich,
+        patch("agent.call_gemini", return_value=(mock_decision, 1.4)) as mock_gemini,
+        patch("agent.TOOLS", {"auto_kill_cpu_stress": MagicMock(return_value="Killed 2 processes")}),
+        patch("agent.post_grafana_annotation", return_value="OK"),
+    ):
+        with agent_module.app.test_client() as client:
+            resp = client.post(
+                "/webhook",
+                json=payload,
+                headers={"X-Agent-Key": "test-agent-key-12345"},
+            )
+
+    assert resp.status_code == 200
+    mock_enrich.assert_called_once()          # Phase 1 was called
+    mock_gemini.assert_called_once()          # Phase 2 was called
+    data = resp.get_json()
+    assert len(data) == 1
+    entry = data[0]
+    assert entry["action"] == "auto_kill_cpu_stress"
+    assert "webhook_received_at" in entry     # MTTR timestamp present
+    assert entry["llm_latency_s"] == pytest.approx(1.4)
+
+
+def test_webhook_mttr_field_present(agent_module):
+    """Each action_log entry includes webhook_received_at for MTTR calculation."""
+    payload = {
+        "alerts": [{
+            "labels": {"alertname": "HighRequestRate", "severity": "warning", "scenario": "ddos"},
+            "annotations": {"summary": "Request rate too high", "description": ""},
+            "status": "firing",
+            "startsAt": "2026-03-30T14:00:00Z",
+        }]
+    }
+    mock_decision = {"reasoning": "DDoS detected", "action": "apply_rate_limit",
+                     "params": {"interface": "eth0", "rate": "50/sec"}, "confidence": 0.9}
+
+    with (
+        patch("agent.enrich_alert_context", return_value={"req_rate": 847.0, "latency_ms": 2100.0}),
+        patch("agent.call_gemini", return_value=(mock_decision, 2.1)),
+        patch("agent.TOOLS", {"apply_rate_limit": MagicMock(return_value="Rate limited")}),
+        patch("agent.post_grafana_annotation", return_value="OK"),
+    ):
+        with agent_module.app.test_client() as client:
+            resp = client.post(
+                "/webhook",
+                json=payload,
+                headers={"X-Agent-Key": "test-agent-key-12345"},
+            )
+
+    assert resp.status_code == 200
+    entry = resp.get_json()[0]
+    assert "webhook_received_at" in entry
+    assert entry["webhook_received_at"] is not None

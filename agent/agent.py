@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 
-from tools import TOOLS, TOOLS_DESCRIPTION
+from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
 import requests as _requests  # aliased to avoid collision with tools.requests
 
 # ── Logging setup ────────────────────────────────────────────
@@ -361,6 +361,7 @@ def webhook():
         status     = alert.get("status", "firing")
 
         logger.info(f"--- Xử lý: {alert_name} [{scenario}] [{status}] ---")
+        webhook_received_at = datetime.now(timezone.utc).isoformat()
 
         # Bỏ qua alert đã resolve (chỉ log)
         if status == "resolved":
@@ -388,7 +389,8 @@ def webhook():
             }
             llm_latency = 0.0
         else:
-            prompt = build_prompt(alert)
+            context = enrich_alert_context(alert)
+            prompt = build_prompt(alert, context)
             decision, llm_latency = call_gemini(prompt)
 
         reasoning  = decision.get("reasoning", "")
@@ -406,6 +408,11 @@ def webhook():
             t0 = time.time()
             try:
                 tool_result = TOOLS[action](**params)
+                # Post Grafana annotation marking AI intervention
+                annotation_text = f"🤖 {action} — {scenario} | " + " ".join(
+                    f"{k}:{v}" for k, v in (context if 'context' in dir() else {}).items()
+                )
+                post_grafana_annotation(annotation_text, tags=["aiops", "auto-remediation", scenario])
                 exec_time = time.time() - t0
                 logger.info(f"Tool result ({exec_time:.2f}s): {tool_result[:200]}...")
             except TypeError as e:
@@ -426,6 +433,7 @@ def webhook():
         # Ghi vào action log
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "webhook_received_at": webhook_received_at,
             "alert": alert_name,
             "scenario": scenario,
             "status": status,

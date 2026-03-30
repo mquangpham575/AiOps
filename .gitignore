@@ -250,6 +250,14 @@ load_test_output/
 core
 core.*
 
+# ── Local Agent Tooling ──────────────────────────────────────
+# Claude Code / Superpowers skills (local use only)
+.superpowers/
+.claude/
+
+# Local-generated docs (not meant for repo)
+docs/
+
 # ── Keep These Files ─────────────────────────────────────────
 # Force include certain files that might be ignored by patterns above
 !.gitkeep

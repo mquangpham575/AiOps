@@ -24,6 +24,8 @@ import logging
 import hmac
 import functools
 import sys
+import inspect
+import re
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import google.generativeai as genai
@@ -201,28 +203,55 @@ When you receive an alert with live system metrics, analyze the data and choose 
 
 {TOOLS_DESCRIPTION}
 
-RESPONSE RULES (MANDATORY):
-- Respond with ONLY a JSON object — no text before or after.
-- Schema: {{"reasoning": "<1-2 sentence analysis of the metrics>", "action": "<tool_name or null>", "params": {{}}, "confidence": <0.0-1.0>}}
+RESPONSE RULES (MANDATORY - follow exactly):
+- Respond with ONLY a JSON object — no text, no markdown code fences, no extra formatting.
+- Schema: {{"reasoning": "<analysis>", "action": "<tool_name_only or null>", "params": {{}}, "confidence": <float>}}
+- CRITICAL: "action" must be ONLY the tool name (e.g. "apply_rate_limit"), NOT the function call itself. DO NOT include parentheses or arguments in the action field.
+- Example CORRECT response:
+  {{"reasoning": "High request rate detected", "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}, "confidence": 0.9}}
+- Example WRONG response (DO NOT do this):
+  {{"reasoning": "...", "action": "apply_rate_limit(interface=eth0...)", "params": {{}}, ...}}  ← WRONG
 - Use null action only if the metrics clearly show the alert has already self-resolved.
 - Base your reasoning on the actual metric VALUES provided — mention the numbers.
 
-DECISION GUIDELINES:
-- CPU > 80% or load1 > 3.0 with container_cpu > 70%: use auto_kill_cpu_stress
-- req_rate spike with latency_ms > 1500: use apply_rate_limit
-- memory_pct > 75% or memory_available_mb < 300: use restart_service
-- load1 > 4.0 with no clear process cause: use reduce_system_load
+SCENARIO → TOOL MAPPING (STRICT — never mix tools across scenarios):
 
-IMPORTANT: check_system_load() and reduce_system_load() take NO parameters.
+  scenario=cpu_stress   → ONLY use: auto_kill_cpu_stress OR get_top_processes OR kill_process
+                          e.g. "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}
+                          NEVER use apply_rate_limit or reduce_system_load for cpu_stress.
+
+  scenario=ddos         → ONLY use: apply_rate_limit OR block_ip
+                          e.g. "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}
+                          NEVER use reduce_system_load or auto_kill_cpu_stress for ddos.
+
+  scenario=memory_stress → ONLY use: restart_service OR reduce_system_load
+                           e.g. "action": "restart_service", "params": {{"container_name": "target-app"}}
+                           NEVER use apply_rate_limit for memory_stress.
+
+  scenario=system_load  → ONLY use: reduce_system_load OR check_system_load
+                          e.g. "action": "reduce_system_load", "params": {{}}
+                          reduce_system_load() and check_system_load() take NO parameters.
+                          NEVER use apply_rate_limit or auto_kill_cpu_stress for system_load.
+
+THRESHOLDS (secondary — scenario mapping takes priority):
+- cpu_stress:    container_cpu > 70% → auto_kill_cpu_stress
+- ddos:          req_rate spike OR latency_ms > 1500 → apply_rate_limit
+- memory_stress: memory_pct > 75% OR memory_available_mb < 300 → restart_service
+- system_load:   load1 > 3.0 → reduce_system_load
+
+CRITICAL: reduce_system_load() and check_system_load() take NO parameters — params must be {{}}.
+CRITICAL: "action" field must contain ONLY the tool name, parameters go in "params" field.
 """
 
 
-def call_gemini(prompt: str) -> tuple[dict, float]:
+def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
     """
     Gọi Gemini API với throttle 3s.
     Trả về (decision_dict, latency_seconds).
+    Detects truncation and retries once if needed.
     """
     global _last_llm_call
+    MAX_RETRIES = 1
 
     # Throttle
     wait = MIN_INTERVAL - (time.time() - _last_llm_call)
@@ -235,7 +264,7 @@ def call_gemini(prompt: str) -> tuple[dict, float]:
         response = model.generate_content(
             SYSTEM_PROMPT + "\n\n" + prompt,
             generation_config=genai.GenerationConfig(
-                max_output_tokens=1024,
+                max_output_tokens=384,  # Reduced further to ensure complete, valid JSON
                 temperature=0.2,   # thấp → output ổn định hơn
             )
         )
@@ -243,28 +272,47 @@ def call_gemini(prompt: str) -> tuple[dict, float]:
         _last_llm_call = time.time()
 
         raw = response.text.strip()
-        logger.info(f"Gemini response ({latency:.2f}s): {raw[:200]}")
 
-        # Extract JSON from response (gemma-3-1b-it may include extra text)
+        # Log FULL raw response for debugging
+        logger.info(f"Gemini full response ({latency:.2f}s, {len(raw)} chars):\n{raw}")
+
+        # Strip markdown code fence if present
+        if raw.startswith("```"):
+            # Remove ``` and language tag (if any) from start
+            raw = re.sub(r'^```\w*\n?', '', raw, flags=re.MULTILINE)
+        if raw.endswith("```"):
+            # Remove ``` from end
+            raw = raw[:-3]
+
+        raw = raw.strip()
+        logger.debug(f"After stripping markdown: {raw[:100]}...")
+
+        # Detect truncation: JSON should end with closing brace
+        is_truncated = not raw.rstrip().endswith('}')
+        if is_truncated and retry_count < MAX_RETRIES:
+            logger.warning(f"Response appears truncated (doesn't end with }}), retrying... (attempt {retry_count + 2}/{MAX_RETRIES + 1})")
+            return call_gemini(prompt, retry_count=retry_count + 1)
+
+        # Extract JSON from response
         try:
             # Try direct parsing first
             decision = json.loads(raw)
-        except json.JSONDecodeError:
-            # Try to find JSON block in text
-            import re
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        except json.JSONDecodeError as e:
+            # Try to find JSON block in text (handles edge cases)
+            json_match = re.search(r'\{.*?\}', raw, re.DOTALL)
             if json_match:
                 json_text = json_match.group()
+                logger.debug(f"Extracted JSON block: {json_text[:100]}...")
                 decision = json.loads(json_text)
             else:
-                raise json.JSONDecodeError("No JSON found in response", raw, 0)
+                raise json.JSONDecodeError("No valid JSON found in response", raw, 0)
 
         return decision, latency
 
     except json.JSONDecodeError as e:
         latency = time.time() - start
         logger.error(f"JSON parse error: {e}")
-        logger.debug(f"Raw response: {response.text[:500]}")
+        logger.error(f"Raw response (full): {response.text}")  # Log full response on error
         return {
             "reasoning": f"Parse error: {str(e)[:100]}...",
             "action": None,
@@ -397,6 +445,27 @@ def webhook():
         action     = decision.get("action")
         params     = decision.get("params", {})
         confidence = decision.get("confidence", 0.0)
+
+        # Ensure params is always a dict before unpacking — LLM may return a string, list, or None
+        if not isinstance(params, dict):
+            logger.warning(f"params from LLM was {type(params).__name__} (value: {params!r}), resetting to {{}}")
+            params = {}
+
+        # Sanitize params: keep only keys the target function actually accepts.
+        # This prevents TypeError when the LLM hallucinates extra/wrong param names.
+        if action and action in TOOLS:
+            target_fn = TOOLS[action]
+            sig = inspect.signature(target_fn)
+            accepted = set(sig.parameters.keys())
+            has_var_keyword = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+            if not has_var_keyword:
+                dropped = {k: v for k, v in params.items() if k not in accepted}
+                if dropped:
+                    logger.warning(f"Dropping unsupported params for {action}: {dropped}")
+                params = {k: v for k, v in params.items() if k in accepted}
 
         logger.info(f"AI reasoning: {reasoning}")
         logger.info(f"Action: {action} | Params: {params} | Confidence: {confidence}")

@@ -178,3 +178,50 @@ def test_webhook_mttr_field_present(agent_module):
     entry = resp.get_json()[0]
     assert "webhook_received_at" in entry
     assert entry["webhook_received_at"] is not None
+
+
+def test_logs_ui_returns_html(agent_module):
+    """GET /logs/ui returns HTML page with table."""
+    # Seed the action log with a known entry
+    agent_module.action_log.clear()
+    agent_module.action_log.append({
+        "timestamp": "2026-03-30T14:28:33+00:00",
+        "webhook_received_at": "2026-03-30T14:28:30+00:00",
+        "alert": "HighCPUUsage",
+        "scenario": "cpu_stress",
+        "status": "firing",
+        "reasoning": "CPU=94% with load1=3.8",
+        "action": "auto_kill_cpu_stress",
+        "params": {"container_name": "target-app"},
+        "confidence": 0.95,
+        "result": "Killed 2 processes",
+        "llm_latency_s": 1.8,
+    })
+
+    with agent_module.app.test_client() as client:
+        resp = client.get(
+            "/logs/ui",
+            headers={"X-Agent-Key": "test-agent-key-12345"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.content_type.startswith("text/html")
+    body = resp.data.decode("utf-8")
+    assert "HighCPUUsage" in body
+    assert "auto_kill_cpu_stress" in body
+    assert "0.95" in body
+
+
+def test_logs_ui_empty_log(agent_module):
+    """GET /logs/ui with empty log returns HTML with 'No actions yet' message."""
+    agent_module.action_log.clear()
+
+    with agent_module.app.test_client() as client:
+        resp = client.get(
+            "/logs/ui",
+            headers={"X-Agent-Key": "test-agent-key-12345"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8")
+    assert "No actions" in body or "empty" in body.lower() or "<tr>" not in body or "no action" in body.lower()

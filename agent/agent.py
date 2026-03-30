@@ -470,6 +470,92 @@ def logs():
     return jsonify(action_log[-limit:])
 
 
+@app.route("/logs/ui")
+@require_api_key
+def logs_ui():
+    """Live HTML table of the 50 most recent AI actions — for screen recording."""
+    limit = int(request.args.get("limit", 50))
+    entries = action_log[-limit:]
+
+    rows = ""
+    for e in reversed(entries):
+        ts = e.get("timestamp", "")[:19].replace("T", " ")
+        recv = e.get("webhook_received_at", "")[:19].replace("T", " ")
+
+        # Compute MTTR if both timestamps are present and parseable
+        mttr_cell = "—"
+        try:
+            if ts and recv:
+                t_recv = datetime.fromisoformat(e["webhook_received_at"].replace("Z", "+00:00"))
+                t_done = datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
+                mttr_s = round((t_done - t_recv).total_seconds(), 1)
+                mttr_cell = f"{mttr_s}s"
+        except Exception:
+            pass
+
+        action  = e.get("action") or "—"
+        conf    = f"{e.get('confidence', 0):.2f}" if e.get("confidence") is not None else "—"
+        llm_lat = f"{e.get('llm_latency_s', 0):.2f}s" if e.get("llm_latency_s") is not None else "—"
+        result  = str(e.get("result") or "")[:80]
+        alert   = e.get("alert", "")
+        scenario = e.get("scenario", "")
+
+        severity_color = {"critical": "#dc3545", "warning": "#fd7e14"}.get(
+            e.get("status", ""), "#6c757d"
+        )
+
+        rows += f"""
+        <tr>
+          <td>{ts}</td>
+          <td><strong>{alert}</strong></td>
+          <td><span style="color:{severity_color}">{scenario}</span></td>
+          <td><code>{action}</code></td>
+          <td>{conf}</td>
+          <td>{llm_lat}</td>
+          <td>{mttr_cell}</td>
+          <td style="font-size:0.85em">{result}</td>
+        </tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="8" style="text-align:center;padding:2rem">No actions recorded yet.</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="5">
+  <title>AIOps Agent — Live Action Log</title>
+  <style>
+    body {{ font-family: monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:1rem; }}
+    h1   {{ color:#58a6ff; margin-bottom:0.5rem; }}
+    p    {{ color:#8b949e; margin-top:0; }}
+    table  {{ border-collapse:collapse; width:100%; }}
+    th,td  {{ border:1px solid #30363d; padding:0.4rem 0.6rem; text-align:left; }}
+    th     {{ background:#161b22; color:#58a6ff; }}
+    tr:hover {{ background:#161b22; }}
+    code   {{ background:#161b22; padding:2px 5px; border-radius:3px; }}
+  </style>
+</head>
+<body>
+  <h1>🤖 AIOps Agent — Live Action Log</h1>
+  <p>Auto-refreshes every 5 seconds. Showing last {limit} actions (newest first).</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp</th><th>Alert</th><th>Scenario</th><th>Action</th>
+        <th>Confidence</th><th>LLM Latency</th><th>MTTR</th><th>Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows}
+    </tbody>
+  </table>
+</body>
+</html>"""
+
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 if __name__ == "__main__":
     logger.info(f"AIOps Agent starting (name={__name__}) on port 8080...")
     # Explicitly using 0.0.0.0 to bind to all interfaces in container

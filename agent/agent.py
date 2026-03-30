@@ -471,9 +471,8 @@ def logs():
 
 
 @app.route("/logs/ui")
-@require_api_key
 def logs_ui():
-    """Live HTML table of the 50 most recent AI actions — for screen recording."""
+    """Live HTML table of the 50 most recent AI actions — for screen recording. No auth needed (read-only)."""
     limit = int(request.args.get("limit", 50))
     entries = action_log[-limit:]
 

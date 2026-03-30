@@ -199,10 +199,7 @@ def test_logs_ui_returns_html(agent_module):
     })
 
     with agent_module.app.test_client() as client:
-        resp = client.get(
-            "/logs/ui",
-            headers={"X-Agent-Key": "test-agent-key-12345"},
-        )
+        resp = client.get("/logs/ui")  # no auth needed — read-only public endpoint
 
     assert resp.status_code == 200
     assert resp.content_type.startswith("text/html")
@@ -217,10 +214,7 @@ def test_logs_ui_empty_log(agent_module):
     agent_module.action_log.clear()
 
     with agent_module.app.test_client() as client:
-        resp = client.get(
-            "/logs/ui",
-            headers={"X-Agent-Key": "test-agent-key-12345"},
-        )
+        resp = client.get("/logs/ui")  # no auth needed
 
     assert resp.status_code == 200
     body = resp.data.decode("utf-8")

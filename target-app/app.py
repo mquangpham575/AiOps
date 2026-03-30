@@ -8,8 +8,8 @@ Endpoints:
   GET /metrics    → Prometheus metrics (tự động qua prometheus_flask_exporter)
 """
 
-import time, math, random
-from flask import Flask, jsonify, Response
+import os, time, math, random
+from flask import Flask, jsonify, Response, request
 
 app = Flask(__name__)
 try:
@@ -53,6 +53,41 @@ def cpu_burn():
         "status": "ok",
         "elapsed_ms": round(elapsed * 1000, 2),
         "result": round(result, 2)
+    })
+
+
+@app.route("/memory")
+def memory_stress():
+    """Allocate memory and hold it — triggers HighMemoryUsage alert under concurrent load.
+
+    Query params:
+        mb (int): megabytes to allocate, default 20, max capped at 100.
+
+    Example:
+        GET /memory?mb=50
+        {"status": "ok", "allocated_mb": 50, "held_s": 10}
+    """
+    try:
+        mb = int(request.args.get("mb", 20))
+    except (ValueError, TypeError):
+        return jsonify({"error": "mb must be an integer"}), 400
+
+    mb = min(mb, 100)  # safety cap: never allocate more than 100MB per request
+
+    # Allocate memory
+    _buffer = bytearray(mb * 1024 * 1024)
+
+    # Hold it for 10 seconds to sustain pressure under concurrent Locust load
+    hold_s = int(os.environ.get("MEMORY_HOLD_SECONDS", "10"))
+    time.sleep(hold_s)
+
+    # Release: let _buffer go out of scope
+    del _buffer
+
+    return jsonify({
+        "status": "ok",
+        "allocated_mb": mb,
+        "held_s": hold_s,
     })
 
 

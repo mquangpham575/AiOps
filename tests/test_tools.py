@@ -37,8 +37,10 @@ def test_post_grafana_annotation_no_token(monkeypatch):
     mock_post.assert_not_called()
 
 
-def test_post_grafana_annotation_failure():
+def test_post_grafana_annotation_failure(monkeypatch):
     """Returns error message but does not raise when Grafana is unreachable."""
+    monkeypatch.setattr(tools, "GRAFANA_TOKEN", "fake-token-for-failure-test")
+
     with patch("tools.requests.post", side_effect=Exception("connection refused")):
         result = tools.post_grafana_annotation("test", ["tag"])
 

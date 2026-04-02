@@ -23,6 +23,14 @@ PROMETHEUS_URL="http://localhost:9090"
 TARGET_CONTAINER="target-app"
 RESULTS_DIR="results"
 
+# Load API key from project root .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../../.env"
+if [ -f "$ENV_FILE" ]; then
+    AGENT_API_KEY=$(grep '^AGENT_API_KEY=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+AGENT_API_KEY="${AGENT_API_KEY:-}"
+
 # Stress test parameters
 STRESS_WORKERS=4            # Number of CPU workers
 STRESS_DURATION=60          # seconds
@@ -225,17 +233,18 @@ done
 section "Step 5: Monitor AI Agent Auto-Remediation"
 
 log "Waiting for Prometheus to detect high CPU and trigger alert..."
-log "💡 Alert typically triggers after 30-40 seconds of sustained high CPU"
+log "💡 Alert triggers after 30s sustained CPU > 70% (ContainerHighCPU) + AlertManager routing"
 
-# Wait for alert to trigger and agent to respond
-# The workflow: CPU high → Prometheus detects → AlertManager fires → Agent receives webhook
-sleep 25
+# Wait for the full alert pipeline:
+#   stress starts → Prometheus 30s 'for:' window → AlertManager evaluates → agent webhook
+# Total: ~50s from stress launch. We already waited 10s ramp-up, so need 40s more.
+sleep 40
 
 log "Checking if AI Agent received CPU alert..."
 
 # Get agent's recent decision logs
 # Logs contain: timestamp, alert name, decision, confidence, actions taken
-agent_logs=$(curl -s "$AGENT_URL/logs?limit=10" 2>/dev/null || echo "[]")
+agent_logs=$(curl -s -H "X-Agent-Key: $AGENT_API_KEY" "$AGENT_URL/logs?limit=10" 2>/dev/null || echo "[]")
 
 echo "=== AI AGENT DECISIONS ===" | tee -a "$RESULT_FILE"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$RESULT_FILE"
@@ -244,7 +253,7 @@ echo "" | tee -a "$RESULT_FILE"
 
 # Check if agent responded to CPU alert
 agent_responded=false
-if echo "$agent_logs" | grep -qi "HighCPU\|CPUUsage\|stress"; then
+if echo "$agent_logs" | grep -qi "HighCPU\|ContainerHighCPU\|CPUUsage\|stress\|cpu_stress"; then
     ok "AI Agent detected CPU stress alert"
     agent_responded=true
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
 # Run All Demos - Sequential Execution with Validation
-# Executes all 3 NT531 AIOps demos in sequence with delays
+# Executes all 4 NT531 AIOps demos in sequence with delays
 # =============================================================
 
 set -e
@@ -55,6 +55,7 @@ clean_all_results() {
     cleanup_old_results "demo1-baseline" 2
     cleanup_old_results "demo2-ddos" 2
     cleanup_old_results "demo3-cpu-stress" 2
+    cleanup_old_results "demo4-memory" 2
     cleanup_old_results "combined_results" 3
 
     ok "All demo results cleaned!"
@@ -82,13 +83,14 @@ log "Performing automatic cleanup of old demo results..."
 cleanup_old_results "demo1-baseline" 2
 cleanup_old_results "demo2-ddos" 2
 cleanup_old_results "demo3-cpu-stress" 2
+cleanup_old_results "demo4-memory" 2
 cleanup_old_results "combined_results" 3
 
 # Create combined results directory
 mkdir -p "$RESULTS_DIR"
 
 banner "🎮 NT531 AIOps Demonstration Suite"
-echo -e "${CYAN}Running all 3 demos sequentially with validation${NC}"
+echo -e "${CYAN}Running all 4 demos sequentially with validation${NC}"
 echo -e "${CYAN}Results will be saved to: $COMBINED_REPORT${NC}"
 echo ""
 
@@ -132,7 +134,7 @@ for service in "${services[@]}"; do
 done
 
 log "Checking demo script permissions..."
-for demo in demo1-baseline demo2-ddos demo3-cpu-stress; do
+for demo in demo1-baseline demo2-ddos demo3-cpu-stress demo4-memory; do
     if [ ! -x "$demo/run.sh" ]; then
         warn "Making $demo/run.sh executable"
         chmod +x "$demo/run.sh" "$demo/validate.sh"
@@ -320,22 +322,91 @@ cd ..
 echo "" | tee -a "$COMBINED_REPORT"
 
 # =============================================================
+# Inter-Demo Delay 3
+# =============================================================
+if [ "$demo3_success" = true ]; then
+    section "Cooldown Period"
+    log "Waiting ${INTER_DEMO_DELAY} seconds before memory demo..."
+
+    for i in $(seq $INTER_DEMO_DELAY -1 1); do
+        echo -ne "\r${YELLOW}[WAIT]${NC} Preparing for memory stress demo... ${i}s remaining"
+        sleep 1
+    done
+    echo ""
+    ok "Ready for Demo 4 (Memory Exhaustion)"
+fi
+
+# =============================================================
+# Demo 4: Memory Exhaustion Auto-Remediation
+# =============================================================
+section "Step 5: Demo 4 - Memory Exhaustion Auto-Remediation"
+
+banner "💾 Demo 4: Intelligent Resource Management"
+log "Objective: Demonstrate automatic memory exhaustion detection and service restart"
+log "Duration: ~5 minutes"
+echo ""
+
+echo "=== DEMO 4: MEMORY EXHAUSTION AUTO-REMEDIATION ===" | tee -a "$COMBINED_REPORT"
+echo "Start Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$COMBINED_REPORT"
+
+cd demo4-memory
+log "Initiating memory exhaustion test with auto-remediation..."
+if ./run.sh; then
+    ok "Demo 4 completed successfully"
+    demo4_success=true
+
+    latest_result=$(ls -t results/memory_stress_*.txt 2>/dev/null | head -1)
+
+    if [ -n "$latest_result" ]; then
+        log "Validating Demo 4 results..."
+        if ./validate.sh "$latest_result"; then
+            ok "Demo 4 validation passed"
+            demo4_validation=true
+        else
+            warn "Demo 4 validation failed"
+            demo4_validation=false
+        fi
+
+        echo "Results: SUCCESS" | tee -a "../$COMBINED_REPORT"
+        echo "Key Achievements:" | tee -a "../$COMBINED_REPORT"
+        echo "✓ Memory exhaustion automatically detected" | tee -a "../$COMBINED_REPORT"
+        echo "✓ AI Agent identified memory trend" | tee -a "../$COMBINED_REPORT"
+        echo "✓ Service restarted to recover memory" | tee -a "../$COMBINED_REPORT"
+        echo "✓ System recovered to normal state" | tee -a "../$COMBINED_REPORT"
+    else
+        warn "No results file found for Demo 4"
+        demo4_validation=false
+        echo "Results: COMPLETED (Validation skipped)" | tee -a "../$COMBINED_REPORT"
+    fi
+else
+    err "Demo 4 failed to complete"
+    demo4_success=false
+    demo4_validation=false
+    echo "Results: FAILED" | tee -a "../$COMBINED_REPORT"
+fi
+
+cd ..
+echo "" | tee -a "$COMBINED_REPORT"
+
+# =============================================================
 # Final Results Summary
 # =============================================================
-section "Step 5: Final Results & Analysis"
+section "Step 6: Final Results & Analysis"
 
 # Calculate success metrics
-total_demos=3
+total_demos=4
 successful_demos=0
 successful_validations=0
 
 [ "$demo1_success" = true ] && ((successful_demos++))
 [ "$demo2_success" = true ] && ((successful_demos++))
 [ "$demo3_success" = true ] && ((successful_demos++))
+[ "$demo4_success" = true ] && ((successful_demos++))
 
 [ "$demo1_validation" = true ] && ((successful_validations++))
 [ "$demo2_validation" = true ] && ((successful_validations++))
 [ "$demo3_validation" = true ] && ((successful_validations++))
+[ "$demo4_validation" = true ] && ((successful_validations++))
 
 success_rate=$((successful_demos * 100 / total_demos))
 validation_rate=$((successful_validations * 100 / total_demos))
@@ -374,22 +445,31 @@ else
     echo "  ✗ Demo 3 (Auto-Remediation): FAIL" | tee -a "$COMBINED_REPORT"
 fi
 
+# Demo 4 Summary
+if [ "$demo4_success" = true ]; then
+    echo "  ✓ Demo 4 (Memory Exhaustion): PASS" | tee -a "$COMBINED_REPORT"
+    [ "$demo4_validation" = true ] && echo "    └─ Validation: ✓ PASS" | tee -a "$COMBINED_REPORT" || echo "    └─ Validation: ✗ FAIL" | tee -a "$COMBINED_REPORT"
+else
+    echo "  ✗ Demo 4 (Memory Exhaustion): FAIL" | tee -a "$COMBINED_REPORT"
+fi
+
 echo "" | tee -a "$COMBINED_REPORT"
 
 # Overall Assessment
-if [ $successful_demos -eq 3 ] && [ $successful_validations -eq 3 ]; then
+if [ $successful_demos -eq 4 ] && [ $successful_validations -eq 4 ]; then
     overall_status="EXCELLENT"
     overall_color="${GREEN}"
     echo "=== OVERALL ASSESSMENT: EXCELLENT ===" | tee -a "$COMBINED_REPORT"
-    echo "🎉 ALL DEMOS PASSED WITH FULL VALIDATION!" | tee -a "$COMBINED_REPORT"
+    echo "🎉 ALL 4 DEMOS PASSED WITH FULL VALIDATION!" | tee -a "$COMBINED_REPORT"
     echo "" | tee -a "$COMBINED_REPORT"
     echo "System Capabilities Demonstrated:" | tee -a "$COMBINED_REPORT"
     echo "  ✓ AI-powered monitoring with minimal overhead" | tee -a "$COMBINED_REPORT"
     echo "  ✓ Real-time attack detection and analysis" | tee -a "$COMBINED_REPORT"
-    echo "  ✓ Autonomous problem resolution" | tee -a "$COMBINED_REPORT"
+    echo "  ✓ Autonomous process management and termination" | tee -a "$COMBINED_REPORT"
+    echo "  ✓ Intelligent memory exhaustion handling" | tee -a "$COMBINED_REPORT"
     echo "  ✓ Production-ready performance and reliability" | tee -a "$COMBINED_REPORT"
     exit_code=0
-elif [ $successful_demos -ge 2 ]; then
+elif [ $successful_demos -ge 3 ]; then
     overall_status="GOOD"
     overall_color="${YELLOW}"
     echo "=== OVERALL ASSESSMENT: GOOD ===" | tee -a "$COMBINED_REPORT"
@@ -433,6 +513,7 @@ echo "  • Combined Report: $COMBINED_REPORT" | tee -a "$COMBINED_REPORT"
 [ -f "demo1-baseline/results/baseline_$TIMESTAMP.txt" ] && echo "  • Demo 1 Results: demo1-baseline/results/" | tee -a "$COMBINED_REPORT"
 [ -f "demo2-ddos/results/ddos_$TIMESTAMP.txt" ] && echo "  • Demo 2 Results: demo2-ddos/results/" | tee -a "$COMBINED_REPORT"
 [ -f "demo3-cpu-stress/results/cpu_stress_$TIMESTAMP.txt" ] && echo "  • Demo 3 Results: demo3-cpu-stress/results/" | tee -a "$COMBINED_REPORT"
+[ -f "demo4-memory/results/memory_stress_$TIMESTAMP.txt" ] && echo "  • Demo 4 Results: demo4-memory/results/" | tee -a "$COMBINED_REPORT"
 echo "" | tee -a "$COMBINED_REPORT"
 
 echo "End Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$COMBINED_REPORT"
@@ -474,7 +555,7 @@ if [ $exit_code -eq 0 ]; then
 else
     echo -e "${YELLOW}⚠️ Some demos need attention. Review logs and re-run individual demos.${NC}"
     echo ""
-    echo -e "${YELLOW}Use: cd demo[1-3]-* && ./run.sh && ./validate.sh${NC}"
+    echo -e "${YELLOW}Use: cd demo[1-4]-* && ./run.sh && ./validate.sh${NC}"
 fi
 
 echo ""

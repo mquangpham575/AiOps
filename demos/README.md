@@ -1,13 +1,13 @@
 # 🎮 AIOps Demos - Interactive Testing & Validation
 
-Welcome to the NT531 AIOps demonstration suite! This folder contains **3 comprehensive demos** that showcase the system's intelligent monitoring, detection, and auto-remediation capabilities.
+Welcome to the NT531 AIOps demonstration suite! This folder contains **4 comprehensive demos** that showcase the system's intelligent monitoring, detection, and auto-remediation capabilities.
 
 ## 📁 Demo Structure
 
 ```
 demos/
 ├── README.md                    ← You are here
-├── run-all-demos.sh            ← Run all 3 demos sequentially
+├── run-all-demos.sh            ← Run all 4 demos sequentially
 ├── demo1-baseline/             ← Measures AI agent overhead
 │   ├── run.sh                  ← Execute baseline test
 │   ├── validate.sh             ← Validate results
@@ -18,11 +18,16 @@ demos/
 │   ├── validate.sh             ← Validate attack detection
 │   ├── README.md               ← Detailed documentation
 │   └── results/                ← Attack logs & results
-└── demo3-cpu-stress/           ← Auto-remediation of CPU stress
-    ├── run.sh                  ← Execute CPU stress test
-    ├── validate.sh             ← Validate auto-kill success
+├── demo3-cpu-stress/           ← Auto-remediation of CPU stress
+│   ├── run.sh                  ← Execute CPU stress test
+│   ├── validate.sh             ← Validate auto-kill success
+│   ├── README.md               ← Detailed documentation
+│   └── results/                ← Process & CPU logs
+└── demo4-memory/               ← Auto-remediation of memory exhaustion
+    ├── run.sh                  ← Execute memory stress test
+    ├── validate.sh             ← Validate service recovery
     ├── README.md               ← Detailed documentation
-    └── results/                ← Process & CPU logs
+    └── results/                ← Memory & recovery logs
 ```
 
 ---
@@ -102,6 +107,31 @@ demos/
 
 ---
 
+### Demo 4: Memory Exhaustion Auto-Remediation
+
+**Objective**: Demonstrate AI-powered memory exhaustion detection and intelligent service restart
+
+**What it demonstrates**:
+
+- Real-time memory pressure monitoring
+- Sustained memory usage pattern detection
+- Intelligent service restart decisions
+- Multi-step auto-remediation workflows
+- Health verification post-recovery
+
+**Expected Results**:
+
+- Alert triggered: **<40 seconds**
+- Service restart: **100% success**
+- Agent confidence: **>85%**
+- Memory recovery: **<30 seconds**
+
+**Duration**: ~5 minutes
+
+**Read more**: [demo4-memory/README.md](demo4-memory/README.md)
+
+---
+
 ## 🚀 Quick Start Guide
 
 ### Prerequisites
@@ -147,8 +177,12 @@ chmod +x run-all-demos.sh
 # 3. Run Demo 2 (DDoS)
 # 4. Wait 30s
 # 5. Run Demo 3 (CPU Stress)
-# 6. Generate combined report
+# 6. Wait 30s
+# 7. Run Demo 4 (Memory)
+# 8. Generate combined report
 ```
+
+**Note**: Running all demos sequentially takes approximately **20-25 minutes**. For faster evaluation, run individual demos from their respective folders.
 
 ---
 
@@ -230,16 +264,16 @@ Password: admin123
 
 ## 🔍 Demo Comparison Matrix
 
-| Feature                | Demo 1       | Demo 2            | Demo 3           |
-| ---------------------- | ------------ | ----------------- | ---------------- |
-| **AI Decision Making** | Basic        | Advanced          | Expert           |
-| **Auto-Remediation**   | ❌ Manual    | ⚠️ Recommendation | ✅ Automatic     |
-| **Process Management** | ❌ None      | ❌ None           | ✅ Full          |
-| **Attack Simulation**  | ❌ None      | ✅ DDoS           | ✅ CPU Stress    |
-| **System Impact**      | Low          | Medium            | High             |
-| **Complexity**         | Simple       | Medium            | Complex          |
-| **Duration**           | ~5 min       | ~2 min            | ~4 min           |
-| **Success Metric**     | Overhead <5% | Detection <15s    | Termination 100% |
+| Feature                | Demo 1       | Demo 2            | Demo 3           | Demo 4            |
+| ---------------------- | ------------ | ----------------- | ---------------- | ----------------- |
+| **AI Decision Making** | Basic        | Advanced          | Expert           | Expert            |
+| **Auto-Remediation**   | ❌ Manual    | ⚠️ Recommendation | ✅ Automatic     | ✅ Automatic      |
+| **Process Management** | ❌ None      | ❌ None           | ✅ Full          | ⚠️ Service Mgmt   |
+| **Attack Simulation**  | ❌ None      | ✅ DDoS           | ✅ CPU Stress    | ✅ Memory Stress  |
+| **System Impact**      | Low          | Medium            | High             | High              |
+| **Complexity**         | Simple       | Medium            | Complex          | Complex           |
+| **Duration**           | ~5 min       | ~2 min            | ~4 min           | ~5 min            |
+| **Success Metric**     | Overhead <5% | Detection <15s    | Termination 100% | Recovery <30s     |
 
 ---
 
@@ -265,16 +299,22 @@ Password: admin123
    - Study multi-step workflows
    - See full system capabilities
 
+4. **Advance with Demo 4** (Memory Exhaustion)
+   - Learn resource management
+   - Observe trend analysis
+   - Understand service orchestration
+   - Master complex remediation scenarios
+
 ### Skills Developed
 
 By completing all demos, you will learn:
 
 - ✅ **System Monitoring**: Prometheus, Grafana, AlertManager
-- ✅ **Container Management**: Docker operations, process control
-- ✅ **AI Integration**: LLM decision-making, tool usage
-- ✅ **Incident Response**: Detection, analysis, remediation
-- ✅ **Performance Analysis**: Metrics collection, comparison
-- ✅ **Testing Methodologies**: Load testing, stress testing, validation
+- ✅ **Container Management**: Docker operations, process control, service restart
+- ✅ **AI Integration**: LLM decision-making, tool usage, trend analysis
+- ✅ **Incident Response**: Detection, analysis, remediation, verification
+- ✅ **Performance Analysis**: Metrics collection, comparison, trend detection
+- ✅ **Testing Methodologies**: Load testing, stress testing, memory testing, validation
 
 ---
 
@@ -426,6 +466,13 @@ GET  /metrics             # Prometheus metrics
 - ✅ **100% process termination success**
 - ✅ CPU returns to baseline <30s
 
+### Demo 4: Memory Exhaustion Auto-Remediation
+
+- ✅ Memory pressure detected (>80%)
+- ✅ Agent identifies memory trend
+- ✅ **Service restart execution 100% success**
+- ✅ Memory returns to baseline <30s
+
 ---
 
 ## 📊 Performance Benchmarks
@@ -457,10 +504,11 @@ GET  /metrics             # Prometheus metrics
 By completing these demos, you've successfully:
 
 - ✅ Validated an AI-powered AIOps system
-- ✅ Demonstrated autonomous incident response
+- ✅ Demonstrated autonomous incident response (4 scenarios)
 - ✅ Measured system performance and overhead
-- ✅ Verified auto-remediation capabilities
+- ✅ Verified auto-remediation capabilities (process kill + service restart)
 - ✅ Gained hands-on experience with production tools
+- ✅ Seen advanced AI decision-making in real scenarios
 
 **These results demonstrate a system that exceeds NT531 course requirements and showcases production-ready AIOps capabilities!**
 

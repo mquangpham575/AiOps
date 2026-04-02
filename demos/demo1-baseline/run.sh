@@ -23,6 +23,14 @@ GRAFANA_URL="http://localhost:3000"
 BASELINE_DURATION=120  # 2 minutes
 RESULTS_DIR="results"
 
+# Load API key from project root .env (two levels up from this script)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../../.env"
+if [ -f "$ENV_FILE" ]; then
+    AGENT_API_KEY=$(grep '^AGENT_API_KEY=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+AGENT_API_KEY="${AGENT_API_KEY:-}"
+
 # Utility functions
 log() { echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $1"; }
 ok()  { echo -e "${GREEN}[✓]${NC} $1"; }
@@ -184,7 +192,7 @@ ok "AI Agent is healthy and ready"
 
 log "Recording metrics WITH AI Agent active..."
 # Same metrics collection, but now WITH the AI agent running
-with_agent_stats=$(docker stats --no-stream --format "{{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" target-app agent 2>/dev/null || echo "N/A")
+with_agent_stats=$(docker stats --no-stream --format "{{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" target-app aiops-agent 2>/dev/null || echo "N/A")
 
 echo "=== WITH AI AGENT ACTIVE ===" | tee -a "$RESULT_FILE"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$RESULT_FILE"
@@ -222,6 +230,7 @@ test_alert='{
 # -d: Send JSON alert payload
 agent_response=$(curl -s -X POST "$AGENT_URL/webhook" \
     -H 'Content-Type: application/json' \
+    -H "X-Agent-Key: $AGENT_API_KEY" \
     -d "$test_alert")
 
 echo "=== AI AGENT TEST RESPONSE ===" | tee -a "$RESULT_FILE"
@@ -246,7 +255,7 @@ section "Step 4: Results Summary"
 log "Collecting final metrics..."
 
 # Get agent decision logs
-recent_logs=$(curl -s "$AGENT_URL/logs?limit=3" 2>/dev/null || echo "Logs unavailable")
+recent_logs=$(curl -s -H "X-Agent-Key: $AGENT_API_KEY" "$AGENT_URL/logs?limit=3" 2>/dev/null || echo "Logs unavailable")
 
 echo "=== AI AGENT RECENT ACTIVITY ===" | tee -a "$RESULT_FILE"
 echo "$recent_logs" | tee -a "$RESULT_FILE"

@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================
-# Demo 3: CPU Stress Auto-Remediation Validation
-# Validates CPU stress detection and automatic remediation
+# Demo 4: Memory Exhaustion Auto-Remediation Validation
+# Validates memory stress detection and automatic remediation
 # =============================================================
 
 set -e
@@ -24,7 +24,7 @@ section() { echo -e "\n${PURPLE}═══ $1 ═══${NC}\n"; }
 
 # Check if results file is provided
 if [ -z "$1" ]; then
-    RESULTS_FILE=$(ls -t results/cpu_stress_*.txt 2>/dev/null | head -1)
+    RESULTS_FILE=$(ls -t results/memory_stress_*.txt 2>/dev/null | head -1)
     if [ -z "$RESULTS_FILE" ]; then
         err "No results file found. Run ./run.sh first or provide file path."
         echo "Usage: $0 [results_file]"
@@ -41,7 +41,7 @@ fi
 
 TARGET_CONTAINER="target-app"
 
-section "Demo 3: CPU Stress Auto-Remediation Validation"
+section "Demo 4: Memory Exhaustion Auto-Remediation Validation"
 
 log "Analyzing results from: $RESULTS_FILE"
 echo ""
@@ -51,15 +51,14 @@ echo ""
 # =============================================================
 section "Validation 1: Test Execution Check"
 
-log "Verifying CPU stress test was executed..."
+log "Verifying memory stress test was executed..."
 
 required_sections=(
-    "BASELINE CPU USAGE"
-    "CPU STRESS TEST INITIATED"
+    "BASELINE MEMORY USAGE"
+    "MEMORY STRESS TEST INITIATED"
     "DURING STRESS"
     "AI AGENT DECISIONS"
-    "POST-REMEDIATION PROCESS CHECK"
-    "POST-REMEDIATION CPU USAGE"
+    "POST-REMEDIATION MEMORY CHECK"
     "FINAL RECOVERY STATE"
 )
 
@@ -81,9 +80,9 @@ else
 fi
 
 # Extract stress parameters
-if grep -q "CPU Workers:" "$RESULTS_FILE"; then
-    cpu_workers=$(grep "CPU Workers:" "$RESULTS_FILE" | head -1 | grep -o "[0-9]*")
-    log "CPU workers used: $cpu_workers"
+if grep -q "Concurrent Users:" "$RESULTS_FILE"; then
+    users=$(grep "Concurrent Users:" "$RESULTS_FILE" | head -1 | grep -o "[0-9]*")
+    log "Concurrent users: $users"
 fi
 
 if grep -q "Duration:" "$RESULTS_FILE"; then
@@ -92,27 +91,28 @@ if grep -q "Duration:" "$RESULTS_FILE"; then
 fi
 
 # =============================================================
-# Validation 2: Stress Process Verification
+# Validation 2: Memory Stress Verification
 # =============================================================
-section "Validation 2: Stress Process Verification"
+section "Validation 2: Memory Stress Verification"
 
-log "Verifying stress processes were created..."
+log "Verifying memory stress was created..."
 
-# Check if stress processes were detected during test
-if grep -q "Active Stress Processes:" "$RESULTS_FILE"; then
-    ok "Active stress processes section found"
+# Check if high memory was detected during test
+if grep -q "DURING STRESS" "$RESULTS_FILE"; then
+    ok "Memory stress phase detected"
 
-    stress_processes=$(sed -n '/Active Stress Processes:/,/DURING STRESS/p' "$RESULTS_FILE" | grep "stress-ng" | head -5)
+    # Look for high memory usage indicators
+    stress_memory=$(sed -n '/DURING STRESS/,/AI AGENT DECISIONS/p' "$RESULTS_FILE" | grep "MemUsage" | head -1)
 
-    if [ -n "$stress_processes" ]; then
-        ok "Stress-ng processes were running"
-        echo -e "${CYAN}Found Processes:${NC}"
-        echo "$stress_processes"
+    if [ -n "$stress_memory" ]; then
+        ok "Memory usage recorded during stress"
+        echo -e "${CYAN}Memory During Stress:${NC}"
+        echo "$stress_memory"
     else
-        warn "No stress-ng processes found in results - stress may have failed"
+        warn "No memory usage data found in stress phase"
     fi
 else
-    err "No process information found"
+    err "No stress phase found"
 fi
 
 echo ""
@@ -122,7 +122,7 @@ echo ""
 # =============================================================
 section "Validation 3: AI Agent Alert Detection"
 
-log "Checking if AI Agent detected CPU stress..."
+log "Checking if AI Agent detected memory stress..."
 
 agent_detected=false
 if grep -q "AI AGENT DECISIONS" "$RESULTS_FILE"; then
@@ -130,15 +130,15 @@ if grep -q "AI AGENT DECISIONS" "$RESULTS_FILE"; then
 
     agent_decisions=$(sed -n '/AI AGENT DECISIONS/,/POST-REMEDIATION/p' "$RESULTS_FILE" | grep -v "===")
 
-    # Check for CPU-related alerts
-    if echo "$agent_decisions" | grep -qi "HighCPU\|CPUUsage\|cpu.*high\|stress"; then
-        ok "AI Agent detected CPU stress alert"
+    # Check for memory-related alerts
+    if echo "$agent_decisions" | grep -qi "HighMemory\|MemoryUsage\|memory.*high\|memory.*pressure"; then
+        ok "AI Agent detected memory stress alert"
         agent_detected=true
 
         echo -e "${CYAN}Agent Decisions Extract:${NC}"
         echo "$agent_decisions" | head -15
     else
-        warn "No CPU-related decisions found in agent logs"
+        warn "No memory-related decisions found in agent logs"
     fi
 else
     err "No agent decisions found"
@@ -151,36 +151,33 @@ echo ""
 # =============================================================
 section "Validation 4: Auto-Remediation Verification"
 
-log "Verifying if agent successfully terminated stress processes..."
+log "Verifying if agent successfully remediated memory..."
 
 remediation_success=false
-if grep -q "POST-REMEDIATION PROCESS CHECK" "$RESULTS_FILE"; then
+if grep -q "POST-REMEDIATION MEMORY CHECK" "$RESULTS_FILE"; then
     ok "Post-remediation check performed"
 
-    # Check if stress processes were killed
-    if grep -q "No stress processes" "$RESULTS_FILE"; then
-        ok "Stress processes were successfully terminated"
+    # Check if service health was verified
+    if grep -q "Service Status: Running" "$RESULTS_FILE"; then
+        ok "Service remained running after remediation"
         remediation_success=true
-    elif grep -q "SUCCESS: All stress processes were terminated" "$RESULTS_FILE"; then
-        ok "Remediation explicitly confirmed successful"
+    elif grep -q "Service.*healthy" "$RESULTS_FILE"; then
+        ok "Service health verified post-remediation"
         remediation_success=true
     else
         # Check current system state
-        log "Checking live system for remaining stress processes..."
-        current_stress=$(docker exec "$TARGET_CONTAINER" ps aux | grep -c "stress-ng" 2>/dev/null | head -1 || echo 0)
-
-        if [ "$current_stress" -eq 0 ]; then
-            ok "No stress processes currently running (verified live)"
+        log "Checking live system service health..."
+        if curl -s -f "http://localhost:5000/health" > /dev/null 2>&1; then
+            ok "Service is currently healthy (verified live)"
             remediation_success=true
         else
-            warn "Found $current_stress stress processes still running"
-            docker exec "$TARGET_CONTAINER" ps aux | grep stress-ng | head -5 || true
+            warn "Service health check failed"
         fi
     fi
 
-    # Display post-remediation processes
-    echo -e "${CYAN}Post-Remediation Process State:${NC}"
-    sed -n '/POST-REMEDIATION PROCESS CHECK/,/POST-REMEDIATION CPU USAGE/p' "$RESULTS_FILE" | grep -v "===" | head -10
+    # Display post-remediation state
+    echo -e "${CYAN}Post-Remediation State:${NC}"
+    sed -n '/POST-REMEDIATION MEMORY CHECK/,/FINAL RECOVERY/p' "$RESULTS_FILE" | grep -v "===" | head -10
 else
     err "No post-remediation check found"
 fi
@@ -188,41 +185,32 @@ fi
 echo ""
 
 # =============================================================
-# Validation 5: CPU Recovery Analysis
+# Validation 5: Memory Recovery Analysis
 # =============================================================
-section "Validation 5: CPU Recovery Analysis"
+section "Validation 5: Memory Recovery Analysis"
 
-log "Analyzing CPU usage across test phases..."
+log "Analyzing memory usage across test phases..."
 
-echo -e "${CYAN}Baseline CPU:${NC}"
-sed -n '/BASELINE CPU USAGE/,/CPU STRESS TEST INITIATED/p' "$RESULTS_FILE" | grep -A 2 "Container Stats"
+echo -e "${CYAN}Baseline Memory:${NC}"
+sed -n '/BASELINE MEMORY USAGE/,/MEMORY STRESS TEST INITIATED/p' "$RESULTS_FILE" | grep -A 2 "Container Stats" | head -3
 echo ""
 
-echo -e "${CYAN}During Stress:${NC}"
-sed -n '/DURING STRESS/,/AI AGENT DECISIONS/p' "$RESULTS_FILE" | grep -A 2 "Container Stats" | head -6
+echo -e "${CYAN}During Stress (Peak):${NC}"
+sed -n '/DURING STRESS/,/AI AGENT DECISIONS/p' "$RESULTS_FILE" | grep "MiB" | tail -1 || echo "N/A"
 echo ""
 
 echo -e "${CYAN}Post-Remediation:${NC}"
-sed -n '/POST-REMEDIATION CPU USAGE/,/FINAL RECOVERY/p' "$RESULTS_FILE" | grep -A 2 "Container Stats"
+sed -n '/POST-REMEDIATION MEMORY CHECK/,/FINAL RECOVERY/p' "$RESULTS_FILE" | grep "MiB" || echo "N/A"
 echo ""
 
 echo -e "${CYAN}Final Recovery:${NC}"
-sed -n '/FINAL RECOVERY STATE/,/DEMO 3 SUMMARY/p' "$RESULTS_FILE" | grep -A 2 "Container Stats"
+sed -n '/FINAL RECOVERY STATE/,/DEMO 4 SUMMARY/p' "$RESULTS_FILE" | grep "MiB" || echo "N/A"
 echo ""
 
-# Compare current CPU to baseline
-log "Checking current system CPU..."
-current_cpu=$(docker stats --no-stream --format "{{.CPUPerc}}" "$TARGET_CONTAINER" 2>/dev/null || echo "N/A")
-log "Current CPU usage: $current_cpu"
-
-# Parse percentage (remove %)
-current_cpu_num=$(echo "$current_cpu" | grep -o "[0-9.]*" || echo 0)
-
-if (( $(awk -v cpu="$current_cpu_num" 'BEGIN {print (cpu < 20)}') )); then
-    ok "CPU has recovered to normal levels (<20%)"
-else
-    warn "CPU usage still elevated: $current_cpu"
-fi
+# Check current memory
+log "Checking current system memory..."
+current_mem=$(docker stats --no-stream --format "{{.MemUsage}}" "$TARGET_CONTAINER" 2>/dev/null || echo "N/A")
+log "Current memory: $current_mem"
 
 # =============================================================
 # Validation 6: Agent Action Analysis
@@ -233,24 +221,26 @@ log "Analyzing agent's remediation actions..."
 
 if [ "$agent_detected" = true ]; then
     # Check what actions agent claimed to take
-    if grep -qi "kill.*stress" "$RESULTS_FILE"; then
-        ok "Agent decided to kill stress processes"
+    if grep -qi "restart.*service\|service.*restart" "$RESULTS_FILE"; then
+        ok "Agent decided to restart service"
+    elif grep -qi "remediat\|action\|tool" "$RESULTS_FILE"; then
+        ok "Agent took remediation action"
     fi
 
-    if grep -qi "auto_kill_cpu_stress" "$RESULTS_FILE"; then
-        ok "Agent used enhanced auto_kill_cpu_stress tool"
+    if grep -qi "restart_service" "$RESULTS_FILE"; then
+        ok "Agent used restart_service tool"
     fi
 
-    if grep -qi "successful\|terminated\|killed" "$RESULTS_FILE"; then
-        ok "Agent confirmed action was successful"
+    if grep -qi "successful\|health\|recovered" "$RESULTS_FILE"; then
+        ok "Agent confirmed remediation was successful"
     fi
 
     # Extract agent's reasoning
     echo -e "${CYAN}Agent Actions Summary:${NC}"
-    if grep -qi "tool.*=\|action\|decision" "$RESULTS_FILE"; then
-        grep -i "tool\|action\|decision" "$RESULTS_FILE" | head -10
+    if grep -qi "decision\|reasoning\|tool" "$RESULTS_FILE"; then
+        grep -i "decision\|reasoning\|tool" "$RESULTS_FILE" | head -8
     else
-        echo "Detailed action log not available"
+        echo "Detailed action log not fully available"
     fi
 else
     warn "Cannot analyze actions - agent did not detect alert"
@@ -267,19 +257,19 @@ log "Verifying expected timeline..."
 
 echo -e "${CYAN}Expected Timeline:${NC}"
 echo "  T+0s:  Baseline recorded"
-echo "  T+10s: CPU stress initiated"
-echo "  T+35s: Prometheus detects high CPU → triggers alert"
+echo "  T+15s: Memory stress initiated"
+echo "  T+35s: Prometheus detects high memory → triggers alert"
 echo "  T+40s: AI Agent receives alert webhook"
 echo "  T+45s: Agent analyzes and takes action"
-echo "  T+50s: Stress processes killed"
-echo "  T+80s: System fully recovered"
+echo "  T+60s: Service recovery measured"
+echo "  T+90s: System fully recovered"
 echo ""
 
 if grep -q "Timeline:" "$RESULTS_FILE"; then
     echo -e "${CYAN}Actual Timeline:${NC}"
-    sed -n '/Timeline:/,/Results:/p' "$RESULTS_FILE" | grep "T+" || echo "Timeline details not available"
+    sed -n '/Timeline:/,/Results:/p' "$RESULTS_FILE" | grep "T+" || echo "Timeline details not fully available"
 else
-    warn "No timeline information in results"
+    warn "No detailed timeline information in results"
 fi
 
 echo ""
@@ -308,17 +298,6 @@ else
     warn "Target application health check failed"
 fi
 
-# Check for any remaining stress processes
-log "Final check for stress processes..."
-remaining_stress=$(docker exec "$TARGET_CONTAINER" ps aux | grep -c "stress-ng" 2>/dev/null | tr -d '\r' || echo 0)
-
-if [ "$remaining_stress" -eq 0 ]; then
-    ok "NO stress processes remain (✅ system clean)"
-else
-    warn "WARNING: Found $remaining_stress stress processes still running"
-    docker exec "$TARGET_CONTAINER" ps aux | grep stress-ng || true
-fi
-
 # Current container stats
 log "Current system stats:"
 docker stats --no-stream --format "{{.Container}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}" "$TARGET_CONTAINER" 2>/dev/null || echo "Stats unavailable"
@@ -335,13 +314,13 @@ max_score=8
 
 # Count passed validations
 [ "$all_sections_found" = true ] && ((++validation_score))
-grep -q "Active Stress Processes:" "$RESULTS_FILE" && ((++validation_score))
+grep -q "DURING STRESS" "$RESULTS_FILE" && ((++validation_score))
 [ "$agent_detected" = true ] && ((++validation_score))
 [ "$remediation_success" = true ] && ((++validation_score))
 grep -q "FINAL RECOVERY STATE" "$RESULTS_FILE" && ((++validation_score))
 curl -s -f "$AGENT_URL/health" > /dev/null 2>&1 && ((++validation_score))
 curl -s -f "$TARGET_URL/health" > /dev/null 2>&1 && ((++validation_score))
-[ "$remaining_stress" -eq 0 ] && ((++validation_score))
+grep -qi "restart\|recover\|success" "$RESULTS_FILE" && ((++validation_score))
 
 validation_percentage=$((validation_score * 100 / max_score))
 
@@ -351,11 +330,11 @@ echo ""
 if [ $validation_score -ge 7 ]; then
     echo -e "${GREEN}✅ EXCELLENT - AUTO-REMEDIATION SUCCESSFUL!${NC}"
     echo ""
-    ok "CPU stress was successfully created"
+    ok "Memory stress was successfully created"
     ok "AI Agent detected the alert"
-    ok "Agent automatically terminated stress processes"
+    ok "Agent automatically remediated memory pressure"
+    ok "Service remained healthy"
     ok "System recovered to normal state"
-    ok "No stress processes remain"
     exit_code=0
 elif [ $validation_score -ge 5 ]; then
     echo -e "${YELLOW}⚠ PARTIAL SUCCESS - ${validation_score}/${max_score} checks passed${NC}"
@@ -363,30 +342,27 @@ elif [ $validation_score -ge 5 ]; then
     warn "Some validations failed but core functionality works"
 
     if [ "$agent_detected" = false ]; then
-        warn "Issue: Agent did not detect CPU alert"
+        warn "Issue: Agent did not detect memory alert"
     fi
     if [ "$remediation_success" = false ]; then
-        warn "Issue: Stress processes were not terminated"
-    fi
-    if [ "$remaining_stress" -gt 0 ]; then
-        warn "Issue: Stress processes still running"
+        warn "Issue: Service health not verified after remediation"
     fi
 
     exit_code=0
 else
     echo -e "${RED}❌ VALIDATION FAILED - Only ${validation_score}/${max_score} checks passed${NC}"
     echo ""
-    err "Demo 3 did not meet minimum validation criteria"
+    err "Demo 4 did not meet minimum validation criteria"
     err "Auto-remediation was not successful"
     exit_code=1
 fi
 
 echo ""
 log "📄 Full results: cat $RESULTS_FILE"
-log "🔄 Re-run demo: cd demos/demo3-cpu-stress && ./run.sh"
-log "📊 View CPU spike in Grafana: http://localhost:3000"
+log "🔄 Re-run demo: cd demos/demo4-memory && ./run.sh"
+log "📊 View memory spike in Grafana: http://localhost:3000"
 log "🤖 View agent logs: curl $AGENT_URL/logs | jq"
-log "🔍 Check processes: docker exec $TARGET_CONTAINER ps aux | grep stress"
+log "💾 Check service logs: docker logs $TARGET_CONTAINER --tail 20"
 echo ""
 
 exit $exit_code

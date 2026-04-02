@@ -10,6 +10,19 @@ def _make_prom_response(value):
     return {"status": "success", "data": {"result": [{"metric": {}, "value": [0, str(value)]}]}}
 
 
+def _make_alerts_response(alertname: str, active_at: str, state: str = "firing") -> dict:
+    """Helper: fake Prometheus /api/v1/alerts response."""
+    return {
+        "data": {
+            "alerts": [{
+                "labels": {"alertname": alertname},
+                "state": state,
+                "activeAt": active_at,
+            }]
+        }
+    }
+
+
 @pytest.fixture
 def runner():
     import demo_runner
@@ -94,26 +107,135 @@ def test_find_agent_action_not_found(runner):
     assert result is None
 
 
+# ── wait_for_alert_fired ───────────────────────────────────────────────────
+
+def test_wait_for_alert_fired_found(runner):
+    """Returns activeAt datetime when matching alert appears in firing state after `after`."""
+    after = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_alerts_response(
+        "HighRequestLatency", "2026-04-02T10:00:08+00:00"
+    )
+
+    with patch("demo_runner.requests.get", return_value=mock_resp):
+        result = runner.wait_for_alert_fired(
+            ["HighRequestLatency", "HighRequestRate"], after=after
+        )
+
+    assert result is not None
+    assert result == datetime(2026, 4, 2, 10, 0, 8, tzinfo=timezone.utc)
+
+
+def test_wait_for_alert_fired_ignores_old_alert(runner):
+    """Returns None when the alert's activeAt is before `after` (pre-existing alert)."""
+    import demo_runner
+    after = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_alerts_response(
+        "HighRequestLatency", "2026-04-02T09:55:00+00:00"  # fires before our attack
+    )
+
+    with patch("demo_runner.requests.get", return_value=mock_resp):
+        with patch.object(demo_runner, "SCENARIO_TIMEOUT_S", 0):
+            result = runner.wait_for_alert_fired(["HighRequestLatency"], after=after)
+
+    assert result is None
+
+
+def test_wait_for_alert_fired_timeout(runner):
+    """Returns None when no alert fires within timeout."""
+    import demo_runner
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"data": {"alerts": []}}
+
+    with patch("demo_runner.requests.get", return_value=mock_resp):
+        with patch.object(demo_runner, "SCENARIO_TIMEOUT_S", 0):
+            result = runner.wait_for_alert_fired(
+                ["HighRequestLatency"], after=datetime.now(timezone.utc)
+            )
+
+    assert result is None
+
+
+# ── wait_for_recovery ─────────────────────────────────────────────────────
+
+def test_wait_for_recovery_requires_consecutive(runner):
+    """Single dip below threshold does NOT declare recovery; 3 consecutive polls do."""
+    import demo_runner
+    # Values: above, below (bounce), above, below, below, below (3 consecutive → recovery)
+    values = [80.0, 20.0, 80.0, 20.0, 20.0, 20.0]
+    call_count = 0
+
+    def mock_get(url, params=None, timeout=None):
+        nonlocal call_count
+        resp = MagicMock()
+        resp.json.return_value = _make_prom_response(values[min(call_count, len(values) - 1)])
+        call_count += 1
+        return resp
+
+    with patch("demo_runner.requests.get", side_effect=mock_get):
+        with patch("demo_runner.PROM_POLL_S", 0):
+            result = runner.wait_for_recovery(
+                "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
+                threshold=30.0,
+            )
+
+    assert result is not None
+    # Must have polled at least 6 times (2 bounces + 3 consecutive + initial above)
+    assert call_count >= 6
+
+
+def test_wait_for_recovery_timeout(runner):
+    """Returns None when metric never sustains below threshold within timeout."""
+    import demo_runner
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = _make_prom_response(95.0)  # always above threshold
+
+    with patch("demo_runner.requests.get", return_value=mock_resp):
+        with patch("demo_runner.SCENARIO_TIMEOUT_S", 0):
+            result = runner.wait_for_recovery(
+                "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
+                threshold=30.0,
+            )
+
+    assert result is None
+
+
+# ── export_csv ────────────────────────────────────────────────────────────
+
 def test_export_csv(runner, tmp_path):
-    """export_csv writes all result fields to CSV."""
+    """export_csv writes 4-point MTTR fields and derived latency columns to CSV."""
     runner.export_file = str(tmp_path / "results.csv")
     runner.results = [{
-        "scenario": "ddos",
-        "alert_fired_at": "14:28:33",
-        "agent_acted_at": "14:28:36",
-        "recovered_at": "14:28:55",
-        "mttr_s": 22.4,
-        "action": "apply_rate_limit",
-        "confidence": 0.91,
-        "llm_latency_s": 2.3,
-        "baseline_cpu_pct": 12.0,
-        "peak_cpu_pct": 35.0,
-        "baseline_mem_pct": 45.0,
-        "peak_mem_pct": 62.0,
+        "scenario":             "ddos",
+        "t0_attack_start":      "14:28:00",
+        "alert_fired_at":       "14:28:14",
+        "agent_acted_at":       "2026-04-02T14:28:17+00:00",
+        "recovered_at":         "14:28:55",
+        "detection_latency_s":  14.0,
+        "response_latency_s":   3.0,
+        "remediation_s":        38.0,
+        "mttr_s":               55.0,
+        "action":               "apply_rate_limit",
+        "confidence":           0.91,
+        "llm_latency_s":        2.3,
+        "baseline_cpu_pct":     12.0,
+        "peak_cpu_pct":         35.0,
+        "peak_req_per_sec":     487.3,
+        "baseline_mem_pct":     45.0,
+        "peak_mem_pct":         62.0,
     }]
     runner.export_csv()
 
     content = open(runner.export_file).read()
-    assert "ddos" in content
-    assert "22.4" in content
-    assert "apply_rate_limit" in content
+    # New columns present
+    assert "t0_attack_start"      in content
+    assert "detection_latency_s"  in content
+    assert "response_latency_s"   in content
+    assert "remediation_s"        in content
+    assert "peak_req_per_sec"     in content
+    # Values written correctly
+    assert "55.0" in content       # mttr_s
+    assert "14.0" in content       # detection_latency_s
+    assert "apply_rate_limit"     in content
+

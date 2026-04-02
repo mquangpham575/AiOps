@@ -254,7 +254,7 @@ if grep -q "POST-ATTACK RECOVERY" "$RESULTS_FILE"; then
 
     # Check current container stats
     log "Current system stats:"
-    docker stats --no-stream --format "{{.Container}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}" target-app agent 2>/dev/null || echo "Stats unavailable"
+    docker stats --no-stream --format "{{.Container}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}" target-app aiops-agent 2>/dev/null || echo "Stats unavailable"
 else
     warn "No post-attack recovery data found"
 fi
@@ -307,13 +307,13 @@ validation_score=0
 max_score=7
 
 # Count passed validations
-[ "$all_sections_found" = true ] && ((validation_score++))
-[ "$alert_triggered" = true ] && ((validation_score++))
-[ "$agent_responded" = true ] && ((validation_score++))
-grep -q "ATTACK RESPONSE ANALYSIS" "$RESULTS_FILE" && ((validation_score++))
-grep -q "POST-ATTACK RECOVERY" "$RESULTS_FILE" && ((validation_score++))
-curl -s -f "$AGENT_URL/health" > /dev/null 2>&1 && ((validation_score++))
-curl -s -f "$TARGET_URL/health" > /dev/null 2>&1 && ((validation_score++))
+[ "$all_sections_found" = true ] && ((++validation_score))
+[ "$alert_triggered" = true ] && ((++validation_score))
+[ "$agent_responded" = true ] && ((++validation_score))
+grep -q "ATTACK RESPONSE ANALYSIS" "$RESULTS_FILE" && ((++validation_score))
+grep -q "POST-ATTACK RECOVERY" "$RESULTS_FILE" && ((++validation_score))
+curl -s -f "$AGENT_URL/health" > /dev/null 2>&1 && ((++validation_score))
+curl -s -f "$TARGET_URL/health" > /dev/null 2>&1 && ((++validation_score))
 
 validation_percentage=$((validation_score * 100 / max_score))
 

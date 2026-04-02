@@ -22,6 +22,14 @@ PROMETHEUS_URL="http://localhost:9090"
 ALERTMANAGER_URL="http://localhost:9093"
 RESULTS_DIR="results"
 
+# Load API key from project root .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../../.env"
+if [ -f "$ENV_FILE" ]; then
+    AGENT_API_KEY=$(grep '^AGENT_API_KEY=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+AGENT_API_KEY="${AGENT_API_KEY:-}"
+
 # Attack parameters
 ATTACK_DURATION=30          # seconds
 CONCURRENT_REQUESTS=50      # requests per second
@@ -246,7 +254,7 @@ fi
 # Get AI Agent's decision logs
 # The agent logs all decisions with timestamps, confidence, and actions
 log "Retrieving AI Agent decision logs..."
-agent_logs=$(curl -s "$AGENT_URL/logs?limit=5" 2>/dev/null || echo "[]")
+agent_logs=$(curl -s -H "X-Agent-Key: $AGENT_API_KEY" "$AGENT_URL/logs?limit=5" 2>/dev/null || echo "[]")
 
 echo "=== AI AGENT DECISIONS ===" | tee -a "$RESULT_FILE"
 echo "$agent_logs" | tee -a "$RESULT_FILE"
@@ -277,7 +285,7 @@ log "Waiting for system to stabilize..."
 sleep 20
 
 log "Recording post-attack metrics..."
-post_attack_stats=$(docker stats --no-stream --format "{{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" target-app agent 2>/dev/null || echo "N/A")
+post_attack_stats=$(docker stats --no-stream --format "{{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" target-app aiops-agent 2>/dev/null || echo "N/A")
 
 echo "=== POST-ATTACK RECOVERY ===" | tee -a "$RESULT_FILE"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$RESULT_FILE"

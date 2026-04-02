@@ -21,10 +21,14 @@ class TestAgentSecurity(unittest.TestCase):
     def test_missing_key_exits(self):
         """Verify the agent fails to start without AGENT_API_KEY."""
         print("Testing strict startup check...")
+        # Use explicit PIPE instead of capture_output=True to avoid WinAPI
+        # handle-duplication bug on Windows Python 3.14 when timeout is set.
         result = subprocess.run(
             [sys.executable, "agent/agent.py"],
             env={**os.environ, "AGENT_API_KEY": ""},
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=5
         )
         self.assertNotEqual(result.returncode, 0, "Agent should exit when key is missing")

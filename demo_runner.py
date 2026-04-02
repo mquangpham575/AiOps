@@ -131,13 +131,60 @@ class DemoRunner:
             pass
         return None
 
-    def wait_for_recovery(self, query: str, threshold: float, below: bool = True) -> datetime | None:
-        """Poll Prometheus until metric crosses threshold. Times out after SCENARIO_TIMEOUT_S."""
+    def wait_for_alert_fired(self, alert_names: list[str], after: datetime) -> datetime | None:
+        """
+        Poll Prometheus /api/v1/alerts until one of alert_names is in firing state
+        with activeAt > after. Returns the activeAt datetime or None on timeout.
+        """
         deadline = time.time() + SCENARIO_TIMEOUT_S
+        while time.time() < deadline:
+            try:
+                r = requests.get(
+                    f"{self.prometheus_url}/api/v1/alerts",
+                    timeout=5,
+                )
+                data = r.json()
+                for alert in data.get("data", {}).get("alerts", []):
+                    if (
+                        alert.get("labels", {}).get("alertname") in alert_names
+                        and alert.get("state") == "firing"
+                    ):
+                        active_at_str = alert.get("activeAt", "")
+                        try:
+                            active_at = datetime.fromisoformat(
+                                active_at_str.replace("Z", "+00:00")
+                            )
+                            if active_at > after:
+                                return active_at
+                        except ValueError:
+                            pass
+            except Exception:
+                pass
+            time.sleep(PROM_POLL_S)
+        return None
+
+    def wait_for_recovery(
+        self,
+        query: str,
+        threshold: float,
+        below: bool = True,
+        consecutive_required: int = 3,
+    ) -> datetime | None:
+        """
+        Poll Prometheus until metric stays on the recovery side of threshold for
+        `consecutive_required` polls in a row. Times out after SCENARIO_TIMEOUT_S.
+        Requiring consecutive polls prevents false-positive recovery on transient dips.
+        """
+        deadline = time.time() + SCENARIO_TIMEOUT_S
+        consecutive = 0
         while time.time() < deadline:
             value = self._prom_query(query)
             if (below and value < threshold) or (not below and value > threshold):
-                return datetime.now(timezone.utc)
+                consecutive += 1
+                if consecutive >= consecutive_required:
+                    return datetime.now(timezone.utc)
+            else:
+                consecutive = 0
             time.sleep(PROM_POLL_S)
         return None
 
@@ -147,9 +194,13 @@ class DemoRunner:
             print("No results to export.")
             return
         fieldnames = [
-            "scenario", "alert_fired_at", "agent_acted_at", "recovered_at",
-            "mttr_s", "action", "confidence", "llm_latency_s",
-            "baseline_cpu_pct", "peak_cpu_pct", "baseline_mem_pct", "peak_mem_pct",
+            "scenario",
+            "t0_attack_start", "alert_fired_at", "agent_acted_at", "recovered_at",
+            "detection_latency_s", "response_latency_s", "remediation_s", "mttr_s",
+            "action", "confidence", "llm_latency_s",
+            "baseline_cpu_pct", "peak_cpu_pct",
+            "peak_req_per_sec",
+            "baseline_mem_pct", "peak_mem_pct",
         ]
         with open(self.export_file, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -161,74 +212,113 @@ class DemoRunner:
         """Print a results table to stdout."""
         if not self.results:
             return
-        print("\n" + "─" * 70)
-        print(f"{'Scenario':<18} {'Action':<26} {'MTTR':>8}  {'Status'}")
-        print("─" * 70)
+        print("\n" + "─" * 80)
+        print(f"{'Scenario':<18} {'Action':<26} {'Detect':>7} {'Respond':>8} {'Remediate':>10} {'MTTR':>8}  {'Status'}")
+        print("─" * 80)
         for r in self.results:
-            mttr = f"{r['mttr_s']}s" if r.get("mttr_s") else "TIMEOUT"
-            status = "✅" if r.get("mttr_s") else "❌"
-            print(f"{r['scenario']:<18} {str(r.get('action','—')):<26} {mttr:>8}  {status}")
-        print("─" * 70)
+            mttr    = f"{r['mttr_s']}s"   if r.get("mttr_s")               else "TIMEOUT"
+            detect  = f"{r['detection_latency_s']}s" if r.get("detection_latency_s") else "—"
+            respond = f"{r['response_latency_s']}s"  if r.get("response_latency_s")  else "—"
+            remedia = f"{r['remediation_s']}s"        if r.get("remediation_s")        else "—"
+            status  = "✅" if r.get("mttr_s") else "❌"
+            print(f"{r['scenario']:<18} {str(r.get('action','—')):<26} {detect:>7} {respond:>8} {remedia:>10} {mttr:>8}  {status}")
+        print("─" * 80)
 
     # ── Scenarios ──────────────────────────────────────────────
 
     def run_ddos(self) -> dict:
-        """Scenario 2: DDoS simulation via Locust."""
+        """Scenario 2: DDoS simulation via Locust with staged load shape."""
         print("\n── Scenario 2: DDoS ──────────────────────────────────────")
-        t_start  = datetime.now(timezone.utc)
+        t0 = datetime.now(timezone.utc)
         baseline = self.record_baseline()
         print(f"  Baseline: CPU={baseline['cpu_pct']}% MEM={baseline['memory_pct']}% LAT={baseline['latency_ms']}ms")
 
+        # StagedLoadShape overrides --users/--spawn-rate; pass profile via env
+        env = {**os.environ, "ATTACK_PROFILE": "ddos"}
         proc = subprocess.Popen([
             sys.executable, "-m", "locust",
             "-f", "loadtest/locustfile.py",
             f"--host={self.target_url}",
-            "--users", "500", "--spawn-rate", "50",
             "--run-time", "3m", "--headless", "--tags", "ddos",
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
+        # T1: wait for Prometheus to fire the alert
+        print("  ⏳ Waiting for alert to fire in Prometheus...")
+        t1 = self.wait_for_alert_fired(
+            ["HighRequestLatency", "HighRequestRate"], after=t0
+        )
+        if t1:
+            print(f"  🔔 Alert fired   T1={t1.strftime('%H:%M:%S')}")
+        else:
+            print("  ⚠️  Alert not detected — continuing anyway")
+
+        # T2: wait for agent to act
         agent_entry = None
         deadline = time.time() + SCENARIO_TIMEOUT_S
         while time.time() < deadline:
-            agent_entry = self.find_agent_action(after=t_start, scenario="ddos")
+            agent_entry = self.find_agent_action(after=t0, scenario="ddos")
             if agent_entry:
-                print(f"  🤖 Agent acted: {agent_entry['action']}")
+                print(f"  🤖 Agent acted   T2={agent_entry['timestamp'][11:19]}  action={agent_entry['action']}")
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        recovered_at = self.wait_for_recovery(
-            "rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m]) / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m]) * 1000",
+        # T3: wait for sustained recovery
+        t3 = self.wait_for_recovery(
+            "rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m])"
+            " / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m]) * 1000",
             threshold=1000.0,
         )
 
         proc.terminate()
         proc.wait(timeout=10)
 
-        mttr_s = round((recovered_at - t_start).total_seconds(), 1) if recovered_at else None
+        # Derive T2 datetime from agent log entry
+        t2 = None
+        if agent_entry and agent_entry.get("timestamp"):
+            try:
+                t2 = datetime.fromisoformat(agent_entry["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        detection_latency_s = round((t1 - t0).total_seconds(), 1) if t1 else None
+        response_latency_s  = round((t2 - t1).total_seconds(), 1) if (t2 and t1) else None
+        remediation_s       = round((t3 - t2).total_seconds(), 1) if (t3 and t2) else None
+        mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
+
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR = {mttr_s}s")
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
+                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
         else:
             print("  ❌ TIMEOUT — recovery not detected within 3 minutes")
 
+        peak_req_per_sec = round(
+            self._prom_query("rate(flask_http_requests_total{job='target-app'}[1m])"), 1
+        )
+
         return {
-            "scenario":          "ddos",
-            "alert_fired_at":    t_start.strftime("%H:%M:%S"),
-            "agent_acted_at":    (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
-            "recovered_at":      recovered_at.strftime("%H:%M:%S") if recovered_at else "TIMEOUT",
-            "mttr_s":            mttr_s,
-            "action":            agent_entry.get("action") if agent_entry else None,
-            "confidence":        agent_entry.get("confidence") if agent_entry else None,
-            "llm_latency_s":     agent_entry.get("llm_latency_s") if agent_entry else None,
-            "baseline_cpu_pct":  baseline["cpu_pct"],
-            "peak_cpu_pct":      round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
-            "baseline_mem_pct":  baseline["memory_pct"],
-            "peak_mem_pct":      round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
+            "scenario":             "ddos",
+            "t0_attack_start":      t0.strftime("%H:%M:%S"),
+            "alert_fired_at":       t1.strftime("%H:%M:%S") if t1 else "",
+            "agent_acted_at":       (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
+            "recovered_at":         t3.strftime("%H:%M:%S") if t3 else "TIMEOUT",
+            "detection_latency_s":  detection_latency_s,
+            "response_latency_s":   response_latency_s,
+            "remediation_s":        remediation_s,
+            "mttr_s":               mttr_s,
+            "action":               agent_entry.get("action") if agent_entry else None,
+            "confidence":           agent_entry.get("confidence") if agent_entry else None,
+            "llm_latency_s":        agent_entry.get("llm_latency_s") if agent_entry else None,
+            "baseline_cpu_pct":     baseline["cpu_pct"],
+            "peak_cpu_pct":         round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
+            "peak_req_per_sec":     peak_req_per_sec,
+            "baseline_mem_pct":     baseline["memory_pct"],
+            "peak_mem_pct":         round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
         }
 
     def run_cpu(self) -> dict:
         """Scenario 3: CPU stress via stress-ng inside target-app container."""
         print("\n── Scenario 3: CPU Stress ─────────────────────────────────")
-        t_start  = datetime.now(timezone.utc)
+        t0 = datetime.now(timezone.utc)
         baseline = self.record_baseline()
         print(f"  Baseline: CPU={baseline['cpu_pct']}% MEM={baseline['memory_pct']}%")
 
@@ -237,16 +327,28 @@ class DemoRunner:
             "stress-ng", "--cpu", "4", "--timeout", "90s",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+        # T1: wait for Prometheus alert
+        print("  ⏳ Waiting for alert to fire in Prometheus...")
+        t1 = self.wait_for_alert_fired(
+            ["ContainerHighCPU", "HighCPUUsage", "CriticalCPUStress"], after=t0
+        )
+        if t1:
+            print(f"  🔔 Alert fired   T1={t1.strftime('%H:%M:%S')}")
+        else:
+            print("  ⚠️  Alert not detected — continuing anyway")
+
+        # T2: wait for agent to act
         agent_entry = None
         deadline = time.time() + SCENARIO_TIMEOUT_S
         while time.time() < deadline:
-            agent_entry = self.find_agent_action(after=t_start, scenario="cpu_stress")
+            agent_entry = self.find_agent_action(after=t0, scenario="cpu_stress")
             if agent_entry:
-                print(f"  🤖 Agent acted: {agent_entry['action']}")
+                print(f"  🤖 Agent acted   T2={agent_entry['timestamp'][11:19]}  action={agent_entry['action']}")
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        recovered_at = self.wait_for_recovery(
+        # T3: sustained recovery
+        t3 = self.wait_for_recovery(
             "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
             threshold=30.0,
         )
@@ -254,52 +356,80 @@ class DemoRunner:
         proc.terminate()
         proc.wait(timeout=5)
 
-        mttr_s = round((recovered_at - t_start).total_seconds(), 1) if recovered_at else None
+        t2 = None
+        if agent_entry and agent_entry.get("timestamp"):
+            try:
+                t2 = datetime.fromisoformat(agent_entry["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        detection_latency_s = round((t1 - t0).total_seconds(), 1) if t1 else None
+        response_latency_s  = round((t2 - t1).total_seconds(), 1) if (t2 and t1) else None
+        remediation_s       = round((t3 - t2).total_seconds(), 1) if (t3 and t2) else None
+        mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
+
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR = {mttr_s}s")
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
+                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
         else:
             print("  ❌ TIMEOUT")
 
         return {
-            "scenario":          "cpu_stress",
-            "alert_fired_at":    t_start.strftime("%H:%M:%S"),
-            "agent_acted_at":    (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
-            "recovered_at":      recovered_at.strftime("%H:%M:%S") if recovered_at else "TIMEOUT",
-            "mttr_s":            mttr_s,
-            "action":            agent_entry.get("action") if agent_entry else None,
-            "confidence":        agent_entry.get("confidence") if agent_entry else None,
-            "llm_latency_s":     agent_entry.get("llm_latency_s") if agent_entry else None,
-            "baseline_cpu_pct":  baseline["cpu_pct"],
-            "peak_cpu_pct":      round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
-            "baseline_mem_pct":  baseline["memory_pct"],
-            "peak_mem_pct":      round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
+            "scenario":             "cpu_stress",
+            "t0_attack_start":      t0.strftime("%H:%M:%S"),
+            "alert_fired_at":       t1.strftime("%H:%M:%S") if t1 else "",
+            "agent_acted_at":       (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
+            "recovered_at":         t3.strftime("%H:%M:%S") if t3 else "TIMEOUT",
+            "detection_latency_s":  detection_latency_s,
+            "response_latency_s":   response_latency_s,
+            "remediation_s":        remediation_s,
+            "mttr_s":               mttr_s,
+            "action":               agent_entry.get("action") if agent_entry else None,
+            "confidence":           agent_entry.get("confidence") if agent_entry else None,
+            "llm_latency_s":        agent_entry.get("llm_latency_s") if agent_entry else None,
+            "baseline_cpu_pct":     baseline["cpu_pct"],
+            "peak_cpu_pct":         round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
+            "peak_req_per_sec":     None,
+            "baseline_mem_pct":     baseline["memory_pct"],
+            "peak_mem_pct":         round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
         }
 
     def run_memory(self) -> dict:
-        """Scenario 4: Memory exhaustion via Locust MemoryStressUser."""
+        """Scenario 4: Memory exhaustion via Locust with staged load shape."""
         print("\n── Scenario 4: Memory Exhaustion ──────────────────────────")
-        t_start  = datetime.now(timezone.utc)
+        t0 = datetime.now(timezone.utc)
         baseline = self.record_baseline()
         print(f"  Baseline: CPU={baseline['cpu_pct']}% MEM={baseline['memory_pct']}%")
 
+        # StagedLoadShape overrides --users/--spawn-rate; pass profile via env
+        env = {**os.environ, "ATTACK_PROFILE": "memory"}
         proc = subprocess.Popen([
             sys.executable, "-m", "locust",
             "-f", "loadtest/locustfile.py",
             f"--host={self.target_url}",
-            "--users", "20", "--spawn-rate", "5",
             "--run-time", "3m", "--headless", "--tags", "memory",
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
+        # T1: wait for Prometheus alert
+        print("  ⏳ Waiting for alert to fire in Prometheus...")
+        t1 = self.wait_for_alert_fired(["HighMemoryUsage"], after=t0)
+        if t1:
+            print(f"  🔔 Alert fired   T1={t1.strftime('%H:%M:%S')}")
+        else:
+            print("  ⚠️  Alert not detected — continuing anyway")
+
+        # T2: wait for agent to act
         agent_entry = None
         deadline = time.time() + SCENARIO_TIMEOUT_S
         while time.time() < deadline:
-            agent_entry = self.find_agent_action(after=t_start, scenario="memory_stress")
+            agent_entry = self.find_agent_action(after=t0, scenario="memory_stress")
             if agent_entry:
-                print(f"  🤖 Agent acted: {agent_entry['action']}")
+                print(f"  🤖 Agent acted   T2={agent_entry['timestamp'][11:19]}  action={agent_entry['action']}")
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        recovered_at = self.wait_for_recovery(
+        # T3: sustained recovery
+        t3 = self.wait_for_recovery(
             "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
             threshold=60.0,
         )
@@ -307,25 +437,42 @@ class DemoRunner:
         proc.terminate()
         proc.wait(timeout=5)
 
-        mttr_s = round((recovered_at - t_start).total_seconds(), 1) if recovered_at else None
+        t2 = None
+        if agent_entry and agent_entry.get("timestamp"):
+            try:
+                t2 = datetime.fromisoformat(agent_entry["timestamp"].replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        detection_latency_s = round((t1 - t0).total_seconds(), 1) if t1 else None
+        response_latency_s  = round((t2 - t1).total_seconds(), 1) if (t2 and t1) else None
+        remediation_s       = round((t3 - t2).total_seconds(), 1) if (t3 and t2) else None
+        mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
+
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR = {mttr_s}s")
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
+                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
         else:
             print("  ❌ TIMEOUT")
 
         return {
-            "scenario":          "memory_stress",
-            "alert_fired_at":    t_start.strftime("%H:%M:%S"),
-            "agent_acted_at":    (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
-            "recovered_at":      recovered_at.strftime("%H:%M:%S") if recovered_at else "TIMEOUT",
-            "mttr_s":            mttr_s,
-            "action":            agent_entry.get("action") if agent_entry else None,
-            "confidence":        agent_entry.get("confidence") if agent_entry else None,
-            "llm_latency_s":     agent_entry.get("llm_latency_s") if agent_entry else None,
-            "baseline_cpu_pct":  baseline["cpu_pct"],
-            "peak_cpu_pct":      round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
-            "baseline_mem_pct":  baseline["memory_pct"],
-            "peak_mem_pct":      round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
+            "scenario":             "memory_stress",
+            "t0_attack_start":      t0.strftime("%H:%M:%S"),
+            "alert_fired_at":       t1.strftime("%H:%M:%S") if t1 else "",
+            "agent_acted_at":       (agent_entry.get("timestamp") or "")[:19] if agent_entry else "",
+            "recovered_at":         t3.strftime("%H:%M:%S") if t3 else "TIMEOUT",
+            "detection_latency_s":  detection_latency_s,
+            "response_latency_s":   response_latency_s,
+            "remediation_s":        remediation_s,
+            "mttr_s":               mttr_s,
+            "action":               agent_entry.get("action") if agent_entry else None,
+            "confidence":           agent_entry.get("confidence") if agent_entry else None,
+            "llm_latency_s":        agent_entry.get("llm_latency_s") if agent_entry else None,
+            "baseline_cpu_pct":     baseline["cpu_pct"],
+            "peak_cpu_pct":         round(self._prom_query("100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"), 1),
+            "peak_req_per_sec":     None,
+            "baseline_mem_pct":     baseline["memory_pct"],
+            "peak_mem_pct":         round(self._prom_query("(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"), 1),
         }
 
     def run(self, scenario: str = "all"):

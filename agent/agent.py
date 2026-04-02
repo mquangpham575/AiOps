@@ -28,7 +28,8 @@ import inspect
 import re
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types  # GenerateContentConfig, etc.
 
 from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
 import requests as _requests  # aliased to avoid collision with tools.requests
@@ -72,8 +73,7 @@ PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not set! Agent will run in dry-run mode.")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(GEMINI_MODEL)
+_genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Throttle & Auth ───────────────────────────────────────────
 _last_llm_call: float = 0.0
@@ -261,12 +261,13 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
 
     start = time.time()
     try:
-        response = model.generate_content(
-            SYSTEM_PROMPT + "\n\n" + prompt,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=384,  # Reduced further to ensure complete, valid JSON
-                temperature=0.2,   # thấp → output ổn định hơn
-            )
+        response = _genai_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=SYSTEM_PROMPT + "\n\n" + prompt,
+            config=genai_types.GenerateContentConfig(
+                max_output_tokens=384,
+                temperature=0.2,
+            ),
         )
         latency = time.time() - start
         _last_llm_call = time.time()
@@ -415,11 +416,14 @@ def webhook():
         if status == "resolved":
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "webhook_received_at": webhook_received_at,
                 "alert": alert_name,
                 "scenario": scenario,
                 "status": "resolved",
                 "reasoning": "Alert resolved, no action needed.",
                 "action": None,
+                "params": {},
+                "context": {},
                 "result": None,
                 "llm_latency_s": 0,
             }
@@ -429,6 +433,7 @@ def webhook():
 
         # Dry-run nếu không có API key
         if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
+            context = {}
             decision = {
                 "reasoning": "[DRY-RUN] No API key. Simulating get_top_processes.",
                 "action": "get_top_processes",
@@ -506,6 +511,7 @@ def webhook():
             "alert": alert_name,
             "scenario": scenario,
             "status": status,
+            "context": context,
             "reasoning": reasoning,
             "action": action,
             "params": params,
@@ -547,45 +553,158 @@ def logs_ui():
 
     rows = ""
     for e in reversed(entries):
-        ts = e.get("timestamp", "")[:19].replace("T", " ")
-        recv = e.get("webhook_received_at", "")[:19].replace("T", " ")
+        raw_ts  = e.get("timestamp", "")
+        raw_recv = e.get("webhook_received_at", "")
+        ts_display = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts  # HH:MM:SS only
 
-        # Compute MTTR if both timestamps are present and parseable
-        mttr_cell = "—"
+        # ── MTTR ─────────────────────────────────────────────────
+        mttr_s = None
         try:
-            if ts and recv:
-                t_recv = datetime.fromisoformat(e["webhook_received_at"].replace("Z", "+00:00"))
-                t_done = datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
+            if raw_ts and raw_recv:
+                t_recv = datetime.fromisoformat(raw_recv.replace("Z", "+00:00"))
+                t_done = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
                 mttr_s = round((t_done - t_recv).total_seconds(), 1)
-                mttr_cell = f"{mttr_s}s"
         except Exception:
             pass
 
-        action  = e.get("action") or "—"
-        conf    = f"{e.get('confidence', 0):.2f}" if e.get("confidence") is not None else "—"
-        llm_lat = f"{e.get('llm_latency_s', 0):.2f}s" if e.get("llm_latency_s") is not None else "—"
-        result  = str(e.get("result") or "")[:80]
-        alert   = e.get("alert", "")
-        scenario = e.get("scenario", "")
+        if mttr_s is None:
+            mttr_cell = '<span style="color:#6c757d">—</span>'
+        elif mttr_s < 10:
+            mttr_cell = f'<span style="color:#3fb950;font-weight:bold">{mttr_s}s</span>'
+        elif mttr_s < 30:
+            mttr_cell = f'<span style="color:#d29922">{mttr_s}s</span>'
+        else:
+            mttr_cell = f'<span style="color:#f85149">{mttr_s}s</span>'
 
-        severity_color = {"critical": "#dc3545", "warning": "#fd7e14"}.get(
-            e.get("status", ""), "#6c757d"
+        # ── Core fields ───────────────────────────────────────────
+        alert_name = e.get("alert", "Unknown")
+        scenario   = e.get("scenario", "")
+        status     = e.get("status", "firing")
+        action     = e.get("action")
+        params     = e.get("params") or {}
+        confidence = e.get("confidence")
+        llm_lat_s  = e.get("llm_latency_s", 0)
+        reasoning  = e.get("reasoning", "")
+        result_raw = str(e.get("result") or "")
+        ctx        = e.get("context") or {}
+
+        # ── Row category ─────────────────────────────────────────
+        # resolved   → dim row
+        # action taken → normal
+        # no action (LLM said null) → soft orange tint
+        # throttled (LLM latency == 0 and firing) → soft purple tint
+        is_resolved   = (status == "resolved")
+        is_throttled  = (status == "firing" and llm_lat_s == 0 and not action)
+        is_no_action  = (status == "firing" and llm_lat_s > 0 and not action)
+        is_error      = action and ("ERROR" in result_raw or "error" in result_raw.lower())
+
+        if is_resolved:
+            row_style = "opacity:0.45"
+        elif is_throttled:
+            row_style = "background:rgba(130,80,255,0.07)"
+        elif is_no_action:
+            row_style = "background:rgba(210,153,34,0.07)"
+        elif is_error:
+            row_style = "background:rgba(248,81,73,0.07)"
+        else:
+            row_style = "background:rgba(63,185,80,0.05)"
+
+        # ── Alert + Scenario cell ─────────────────────────────────
+        scenario_colors = {
+            "cpu_stress":    "#e3b341",
+            "ddos":          "#f85149",
+            "memory_stress": "#d2a8ff",
+            "system_load":   "#79c0ff",
+            "overhead":      "#6e7681",
+        }
+        sc_color = scenario_colors.get(scenario, "#8b949e")
+        status_badge_color = "#3fb950" if is_resolved else "#f85149"
+        status_label       = "RESOLVED" if is_resolved else "FIRING"
+
+        alert_cell = (
+            f'<strong style="color:#e6edf3">{alert_name}</strong><br>'
+            f'<span style="color:{sc_color};font-size:0.78em">&#9632; {scenario}</span>'
+            f'&nbsp;<span style="color:{status_badge_color};font-size:0.72em;border:1px solid {status_badge_color};'
+            f'padding:1px 4px;border-radius:3px">{status_label}</span>'
         )
 
+        # ── Live Metrics cell ────────────────────────────────────
+        if ctx:
+            metric_lines = "".join(
+                f'<div><span style="color:#8b949e">{k}:</span> '
+                f'<span style="color:#e6edf3">{v}</span></div>'
+                for k, v in ctx.items()
+            )
+            metrics_cell = f'<div style="font-size:0.80em;line-height:1.6">{metric_lines}</div>'
+        elif is_resolved:
+            metrics_cell = '<span style="color:#6c757d;font-size:0.80em">alert resolved</span>'
+        elif is_throttled:
+            metrics_cell = '<span style="color:#8957e5;font-size:0.80em">⏸ throttled / no LLM call</span>'
+        else:
+            metrics_cell = '<span style="color:#6c757d;font-size:0.80em">—</span>'
+
+        # ── Decision cell (action + params + reasoning) ───────────
+        if is_resolved:
+            decision_cell = '<span style="color:#3fb950;font-size:0.85em">✔ self-resolved</span>'
+        elif is_throttled:
+            decision_cell = '<span style="color:#8957e5;font-size:0.85em">⏸ skipped (throttle / dup)</span>'
+        elif not action:
+            short_reason  = reasoning[:120] + ("…" if len(reasoning) > 120 else "")
+            decision_cell = (
+                f'<span style="color:#d29922;font-size:0.85em">— no action</span><br>'
+                f'<span style="color:#6c757d;font-size:0.78em" title="{reasoning}">{short_reason}</span>'
+            )
+        else:
+            params_str = (
+                "(" + ", ".join(f'{k}=<em>{v}</em>' for k, v in params.items()) + ")"
+                if params else "()"
+            )
+            short_reason = reasoning[:130] + ("…" if len(reasoning) > 130 else "")
+            decision_cell = (
+                f'<code style="color:#79c0ff">{action}</code>'
+                f'<span style="color:#6e7681;font-size:0.80em">{params_str}</span><br>'
+                f'<span style="color:#8b949e;font-size:0.78em" title="{reasoning}">💬 {short_reason}</span>'
+            )
+
+        # ── Confidence + LLM latency cell ─────────────────────────
+        if confidence is not None and llm_lat_s > 0:
+            if confidence >= 0.8:
+                conf_color = "#3fb950"
+            elif confidence >= 0.5:
+                conf_color = "#d29922"
+            else:
+                conf_color = "#f85149"
+            conf_cell = (
+                f'<span style="color:{conf_color};font-weight:bold">{confidence:.2f}</span><br>'
+                f'<span style="color:#6c757d;font-size:0.78em">LLM {llm_lat_s:.2f}s</span>'
+            )
+        else:
+            conf_cell = '<span style="color:#6c757d">—</span>'
+
+        # ── Result cell ───────────────────────────────────────────
+        result_display = result_raw[:250] + ("…" if len(result_raw) > 250 else "")
+        if not result_raw or is_resolved:
+            result_cell = '<span style="color:#6c757d;font-size:0.80em">—</span>'
+        elif "ERROR" in result_raw or "error" in result_raw.lower():
+            result_cell = f'<span style="color:#f85149;font-size:0.80em" title="{result_raw}">⚠ {result_display}</span>'
+        elif "✅" in result_raw or "Restarted" in result_raw or "Killed" in result_raw or "limit" in result_raw.lower():
+            result_cell = f'<span style="color:#3fb950;font-size:0.80em" title="{result_raw}">✔ {result_display}</span>'
+        else:
+            result_cell = f'<span style="color:#c9d1d9;font-size:0.80em" title="{result_raw}">{result_display}</span>'
+
         rows += f"""
-        <tr>
-          <td>{ts}</td>
-          <td><strong>{alert}</strong></td>
-          <td><span style="color:{severity_color}">{scenario}</span></td>
-          <td><code>{action}</code></td>
-          <td>{conf}</td>
-          <td>{llm_lat}</td>
-          <td>{mttr_cell}</td>
-          <td style="font-size:0.85em">{result}</td>
+        <tr style="{row_style}">
+          <td style="white-space:nowrap;color:#8b949e;font-size:0.85em">{ts_display}</td>
+          <td>{alert_cell}</td>
+          <td>{metrics_cell}</td>
+          <td>{decision_cell}</td>
+          <td style="text-align:center">{conf_cell}</td>
+          <td style="text-align:center">{mttr_cell}</td>
+          <td>{result_cell}</td>
         </tr>"""
 
     if not rows:
-        rows = '<tr><td colspan="8" style="text-align:center;padding:2rem">No actions recorded yet.</td></tr>'
+        rows = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:#6c757d">No actions recorded yet.</td></tr>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -594,24 +713,42 @@ def logs_ui():
   <meta http-equiv="refresh" content="5">
   <title>AIOps Agent — Live Action Log</title>
   <style>
-    body {{ font-family: monospace; background:#0d1117; color:#c9d1d9; margin:0; padding:1rem; }}
-    h1   {{ color:#58a6ff; margin-bottom:0.5rem; }}
-    p    {{ color:#8b949e; margin-top:0; }}
-    table  {{ border-collapse:collapse; width:100%; }}
-    th,td  {{ border:1px solid #30363d; padding:0.4rem 0.6rem; text-align:left; }}
-    th     {{ background:#161b22; color:#58a6ff; }}
-    tr:hover {{ background:#161b22; }}
-    code   {{ background:#161b22; padding:2px 5px; border-radius:3px; }}
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    body  {{ font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+             background:#0d1117; color:#c9d1d9; margin:0; padding:1rem 1.5rem; }}
+    h1    {{ color:#58a6ff; margin-bottom:0.25rem; font-size:1.3rem; }}
+    .sub  {{ color:#8b949e; margin-top:0; font-size:0.85rem; margin-bottom:1rem; }}
+    table {{ border-collapse:collapse; width:100%; table-layout:auto; }}
+    th,td {{ border:1px solid #21262d; padding:0.45rem 0.65rem; vertical-align:top; }}
+    th    {{ background:#161b22; color:#58a6ff; font-size:0.82rem;
+             text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap; }}
+    tr:hover td {{ background:#161b22 !important; }}
+    code  {{ background:#161b22; padding:2px 5px; border-radius:3px; font-size:0.88em; }}
+    .legend {{ display:flex; gap:1.5rem; margin-bottom:0.75rem; font-size:0.78rem; color:#6c757d; }}
+    .legend span {{ display:flex; align-items:center; gap:0.3rem; }}
+    .dot  {{ width:9px; height:9px; border-radius:50%; display:inline-block; }}
   </style>
 </head>
 <body>
   <h1>🤖 AIOps Agent — Live Action Log</h1>
-  <p>Auto-refreshes every 5 seconds. Showing last {limit} actions (newest first).</p>
+  <p class="sub">Auto-refreshes every 5 seconds &nbsp;·&nbsp; Showing last {limit} actions (newest first)</p>
+  <div class="legend">
+    <span><span class="dot" style="background:#3fb950"></span> Action taken</span>
+    <span><span class="dot" style="background:#d29922"></span> No action (metrics OK)</span>
+    <span><span class="dot" style="background:#8957e5"></span> Throttled / skipped</span>
+    <span><span class="dot" style="background:#f85149"></span> Error</span>
+    <span><span class="dot" style="background:#6c757d"></span> Resolved</span>
+  </div>
   <table>
     <thead>
       <tr>
-        <th>Timestamp</th><th>Alert</th><th>Scenario</th><th>Action</th>
-        <th>Confidence</th><th>LLM Latency</th><th>MTTR</th><th>Result</th>
+        <th>Time</th>
+        <th>Alert / Status</th>
+        <th>Live Metrics at Decision</th>
+        <th>AI Decision + Reasoning</th>
+        <th>Conf / LLM</th>
+        <th>MTTR</th>
+        <th>Result</th>
       </tr>
     </thead>
     <tbody>

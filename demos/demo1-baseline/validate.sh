@@ -177,7 +177,7 @@ if curl -s -f "$AGENT_URL/health" > /dev/null 2>&1; then
     ok "AI Agent is currently healthy"
 
     # Get current agent stats
-    current_stats=$(docker stats --no-stream --format "{{.Container}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}" agent 2>/dev/null || echo "Stats unavailable")
+    current_stats=$(docker stats --no-stream --format "{{.Container}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}" aiops-agent 2>/dev/null || echo "Stats unavailable")
     log "Current agent stats: $current_stats"
 else
     warn "AI Agent is not currently running"
@@ -223,11 +223,11 @@ validation_score=0
 max_score=5
 
 # Count passed validations
-[ "$all_sections_found" = true ] && ((validation_score++))
-grep -q "AI AGENT TEST RESPONSE" "$RESULTS_FILE" && ((validation_score++))
-grep -q "AI AGENT RECENT ACTIVITY" "$RESULTS_FILE" && ((validation_score++))
-grep -q "SUMMARY" "$RESULTS_FILE" && ((validation_score++))
-curl -s -f "$AGENT_URL/health" > /dev/null 2>&1 && ((validation_score++))
+[ "$all_sections_found" = true ] && ((++validation_score))
+grep -q "AI AGENT TEST RESPONSE" "$RESULTS_FILE" && ((++validation_score))
+grep -q "AI AGENT RECENT ACTIVITY" "$RESULTS_FILE" && ((++validation_score))
+grep -q "SUMMARY" "$RESULTS_FILE" && ((++validation_score))
+curl -s -f "$AGENT_URL/health" > /dev/null 2>&1 && ((++validation_score))
 
 validation_percentage=$((validation_score * 100 / max_score))
 

@@ -44,7 +44,7 @@ The following metrics were derived from controlled experiments within a local Do
 | **Consistency** | Variable (Human-dependent) | High (Model-driven) |
 | **Cost per Incident** | High (Labor costs) | Minimal ($0.005/run)* |
 
-*Note: AI performance is significantly faster for recurring incidents where standard operating procedures (SOPs) can be automated. Cost estimate based on average Gemini 1.5 Flash API pricing for 1K tokens.*
+*Note: Cost estimate based on average Gemini 1.5 Flash API pricing for 1K tokens.*
 
 ---
 
@@ -55,6 +55,51 @@ The following metrics were derived from controlled experiments within a local Do
 - **Microservices Architecture**: A 7-service stack containerized with Docker Compose for modularity and scalability.
 - **Enterprise-Grade Monitoring**: Full integration with Prometheus, Grafana, and AlertManager for high-fidelity observability, including automatic annotation markers at each AI intervention.
 - **Extensible Toolset**: Modular remediation engine supporting Docker API interactions, network rate limiting, and process management across 4 distinct failure scenarios.
+
+---
+
+## Repository Structure
+
+```
+.
+├── agent/                    # AI Agent service
+│   ├── agent.py              #   Flask webhook receiver + Gemini reasoning pipeline
+│   ├── tools.py              #   Remediation tool implementations (Docker, iptables, etc.)
+│   ├── requirements.txt
+│   └── Dockerfile
+├── target-app/               # Monitored Flask application (the "victim")
+│   ├── app.py                #   Endpoints: /, /heavy, /cpu, /memory, /health
+│   ├── requirements.txt
+│   └── Dockerfile
+├── loadtest/                 # Locust load-test scenarios
+│   ├── locustfile.py         #   NormalUser, AttackUser, MemoryStressUser classes
+│   └── requirements.txt
+├── prometheus/               # Prometheus configuration
+│   ├── prometheus.yml        #   Scrape targets
+│   └── alert.rules.yml       #   Alert rules for all 4 scenarios
+├── alertmanager/             # AlertManager routing config
+│   └── alertmanager.yml
+├── grafana/                  # Grafana provisioning
+│   ├── dashboards/           #   aiops-overview.json, agent-analytics.json
+│   └── datasources/          #   prometheus.yml datasource
+├── demos/                    # Shell-based demo scripts (legacy/supplementary)
+│   ├── demo1-baseline/       #   Overhead measurement (with/without agent)
+│   ├── demo2-ddos/           #   DDoS simulation
+│   ├── demo3-cpu-stress/     #   CPU stress via stress-ng
+│   ├── demo4-memory/         #   Memory exhaustion via Locust
+│   └── run-all-demos.sh      #   Run all four demos in sequence
+├── tests/                    # Unit test suite (27 tests, all passing)
+│   ├── conftest.py
+│   ├── test_agent.py
+│   ├── test_agent_security.py
+│   ├── test_demo_runner.py
+│   ├── test_target_app.py
+│   └── test_tools.py
+├── demo_runner.py            # Automated Python runner with MTTR measurement + CSV export
+├── docker-compose.yml        # Full 7-service stack definition
+├── .env.example              # Environment variable template
+└── README.md
+```
 
 ---
 
@@ -170,7 +215,15 @@ To maintain academic rigor, the following experimental setups were used. All MTT
 
 **Monitoring Scope & Constraints**: This PoC focuses on high-level system metrics (CPU, RAM, Latency). It does not currently implement tracking for packet loss (%), which would require kernel-level instrumentation like eBPF. For throughput monitoring, while not explicitly configured in the default alerts, cAdvisor natively provides `container_network_receive_bytes_total`, which offers a straightforward path for adding byte-level traffic analysis without additional instrumentation.
 
+---
+
 ## Operations and Testing
+
+### Run Unit Tests
+```bash
+# All 27 tests should pass
+python -m pytest tests/ -v
+```
 
 ### Automated Demo Suite
 ```bash
@@ -180,7 +233,7 @@ python demo_runner.py --scenario all --export results.csv
 # Run a single scenario
 python demo_runner.py --scenario ddos   # or: cpu, memory
 
-# Legacy shell-based demos (also supported)
+# Legacy shell-based demos (supplementary)
 cd demos && ./run-all-demos.sh
 ```
 
@@ -262,7 +315,7 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 ### **⭐ If this project helped you, please consider giving it a star!**
 
-**[⬆️ Back to Top](#-agentic-aiops--nt531-auto-remediation-system)**
+**[⬆️ Back to Top](#agentic-aiops-nt531-auto-remediation-system)**
 
 </div>
 

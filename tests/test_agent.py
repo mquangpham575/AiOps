@@ -1,5 +1,5 @@
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agent'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'agent'))
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -158,13 +158,13 @@ def test_webhook_mttr_field_present(agent_module):
             "startsAt": "2026-03-30T14:00:00Z",
         }]
     }
-    mock_decision = {"reasoning": "DDoS detected", "action": "apply_rate_limit",
-                     "params": {"interface": "eth0", "rate": "50/sec"}, "confidence": 0.9}
+    mock_decision = {"reasoning": "DDoS detected", "action": "restart_service",
+                     "params": {"container_name": "target-app"}, "confidence": 0.9}
 
     with (
         patch("agent.enrich_alert_context", return_value={"req_rate": 847.0, "latency_ms": 2100.0}),
         patch("agent.call_gemini", return_value=(mock_decision, 2.1)),
-        patch("agent.TOOLS", {"apply_rate_limit": MagicMock(return_value="Rate limited")}),
+        patch("agent.TOOLS", {"restart_service": MagicMock(return_value="Restarted container: target-app")}),
         patch("agent.post_grafana_annotation", return_value="OK"),
     ):
         with agent_module.app.test_client() as client:

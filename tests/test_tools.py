@@ -13,7 +13,7 @@ def test_post_grafana_annotation_success():
 
     with patch("tools.requests.post", return_value=mock_response) as mock_post:
         result = tools.post_grafana_annotation(
-            text="🤖 apply_rate_limit — ddos | CPU:45% MEM:60% LAT:2300ms",
+            text="🤖 restart_service — ddos | CPU:45% MEM:60% LAT:2300ms",
             tags=["aiops", "auto-remediation", "ddos"]
         )
 
@@ -22,7 +22,7 @@ def test_post_grafana_annotation_success():
     call_kwargs = mock_post.call_args
     assert "annotations" in call_kwargs[0][0]  # URL contains /api/annotations
     payload = call_kwargs[1]["json"]
-    assert payload["text"] == "🤖 apply_rate_limit — ddos | CPU:45% MEM:60% LAT:2300ms"
+    assert payload["text"] == "🤖 restart_service — ddos | CPU:45% MEM:60% LAT:2300ms"
     assert "aiops" in payload["tags"]
 
 
@@ -57,3 +57,9 @@ def test_utility_tools_not_in_agent_tools():
     # Confirm the functions still exist as utilities
     assert callable(tools.get_prometheus_metrics)
     assert callable(tools.validate_container_exists)
+
+
+def test_removed_tools_not_in_agent_tools():
+    """block_ip and apply_rate_limit were removed for the distributed setup."""
+    assert "block_ip" not in tools.TOOLS
+    assert "apply_rate_limit" not in tools.TOOLS

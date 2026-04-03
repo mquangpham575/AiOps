@@ -104,3 +104,15 @@ groups:
         annotations:
           summary: "System load nguy hiểm"
           description: "1-minute load average: {{ $value }} - cần giảm tải ngay"
+
+      # ── Container restart rate ──────────────────────────────────
+      - alert: HighContainerRestartRate
+        expr: |
+          increase(container_restart_count{name="target-app"}[5m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          scenario: system_load
+        annotations:
+          summary: "Container restart rate cao"
+          description: "target-app restarted {{ $value }} times in 5 minutes"

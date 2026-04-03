@@ -1,5 +1,5 @@
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'target-app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'target-app'))
 
 import pytest
 from app import app as flask_app

@@ -4,14 +4,14 @@ locustfile.py — Load test scenarios for AIOps evaluation.
 Cách chạy (từ thư mục gốc):
   # DDoS scenario (staged: warm-up → ramp → peak over 3 min):
   ATTACK_PROFILE=ddos locust -f loadtest/locustfile.py \
-    --host=http://localhost:5000 --run-time 3m --headless --tags ddos
+    --host=http://<AZURE_VM_IP> --run-time 3m --headless --tags ddos
 
   # Memory scenario (staged: warm-up → ramp → peak over 3 min):
   ATTACK_PROFILE=memory locust -f loadtest/locustfile.py \
-    --host=http://localhost:5000 --run-time 3m --headless --tags memory
+    --host=http://<AZURE_VM_IP> --run-time 3m --headless --tags memory
 
   # UI mode (manual exploration — no ATTACK_PROFILE needed):
-  locust -f loadtest/locustfile.py --host=http://localhost:5000
+  locust -f loadtest/locustfile.py --host=http://<AZURE_VM_IP>
 
 NOTE: StagedLoadShape overrides --users / --spawn-rate CLI flags.
       demo_runner.py passes ATTACK_PROFILE automatically via env=.

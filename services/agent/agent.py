@@ -33,6 +33,7 @@ from google.genai import types as genai_types  # GenerateContentConfig, etc.
 
 from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
 import requests as _requests  # aliased to avoid collision with tools.requests
+from prometheus_client import Gauge
 
 # ── Logging setup ────────────────────────────────────────────
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -65,6 +66,18 @@ except Exception as e:
     @app.route("/metrics")
     def metrics():
         return Response("# AI Agent metrics (fallback)\n", mimetype="text/plain")
+
+# ── MTTR Prometheus gauges ──────────────────────────────────
+AGENT_RESPONSE_LATENCY = Gauge(
+    "agent_response_latency_seconds",
+    "Time from webhook received to action taken",
+    ["agent_type"],
+)
+AGENT_MTTR = Gauge(
+    "agent_mttr_seconds",
+    "End-to-end incident response time (alert startsAt to action taken)",
+    ["agent_type"],
+)
 
 # ── Gemini setup ─────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -206,11 +219,11 @@ When you receive an alert with live system metrics, analyze the data and choose 
 RESPONSE RULES (MANDATORY - follow exactly):
 - Respond with ONLY a JSON object — no text, no markdown code fences, no extra formatting.
 - Schema: {{"reasoning": "<analysis>", "action": "<tool_name_only or null>", "params": {{}}, "confidence": <float>}}
-- CRITICAL: "action" must be ONLY the tool name (e.g. "apply_rate_limit"), NOT the function call itself. DO NOT include parentheses or arguments in the action field.
+- CRITICAL: "action" must be ONLY the tool name (e.g. "restart_service"), NOT the function call itself. DO NOT include parentheses or arguments in the action field.
 - Example CORRECT response:
-  {{"reasoning": "High request rate detected", "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}, "confidence": 0.9}}
+  {{"reasoning": "High CPU detected at 92%", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}, "confidence": 0.9}}
 - Example WRONG response (DO NOT do this):
-  {{"reasoning": "...", "action": "apply_rate_limit(interface=eth0...)", "params": {{}}, ...}}  ← WRONG
+  {{"reasoning": "...", "action": "auto_kill_cpu_stress(container_name=...)", "params": {{}}, ...}}  ← WRONG
 - Use null action only if the metrics clearly show the alert has already self-resolved.
 - Base your reasoning on the actual metric VALUES provided — mention the numbers.
 
@@ -218,24 +231,21 @@ SCENARIO → TOOL MAPPING (STRICT — never mix tools across scenarios):
 
   scenario=cpu_stress   → ONLY use: auto_kill_cpu_stress OR get_top_processes OR kill_process
                           e.g. "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}
-                          NEVER use apply_rate_limit or reduce_system_load for cpu_stress.
+                          NEVER use reduce_system_load for cpu_stress.
 
-  scenario=ddos         → ONLY use: apply_rate_limit OR block_ip
-                          e.g. "action": "apply_rate_limit", "params": {{"interface": "eth0", "rate": "50/sec"}}
-                          NEVER use reduce_system_load or auto_kill_cpu_stress for ddos.
+  scenario=ddos         → ONLY use: restart_service
+                          e.g. "action": "restart_service", "params": {{"container_name": "target-app"}}
 
   scenario=memory_stress → ONLY use: restart_service OR reduce_system_load
                            e.g. "action": "restart_service", "params": {{"container_name": "target-app"}}
-                           NEVER use apply_rate_limit for memory_stress.
 
   scenario=system_load  → ONLY use: reduce_system_load OR check_system_load
                           e.g. "action": "reduce_system_load", "params": {{}}
                           reduce_system_load() and check_system_load() take NO parameters.
-                          NEVER use apply_rate_limit or auto_kill_cpu_stress for system_load.
 
 THRESHOLDS (secondary — scenario mapping takes priority):
 - cpu_stress:    container_cpu > 70% → auto_kill_cpu_stress
-- ddos:          req_rate spike OR latency_ms > 1500 → apply_rate_limit
+- ddos:          req_rate spike OR latency_ms > 1500 → restart_service
 - memory_stress: memory_pct > 75% OR memory_available_mb < 300 → restart_service
 - system_load:   load1 > 3.0 → reduce_system_load
 
@@ -484,7 +494,7 @@ def webhook():
                 tool_result = TOOLS[action](**params)
                 # Post Grafana annotation marking AI intervention
                 annotation_text = f"🤖 {action} — {scenario} | " + " ".join(
-                    f"{k}:{v}" for k, v in (context if 'context' in dir() else {}).items()
+                    f"{k}:{v}" for k, v in context.items()
                 )
                 post_grafana_annotation(annotation_text, tags=["aiops", "auto-remediation", scenario])
                 exec_time = time.time() - t0
@@ -504,9 +514,31 @@ def webhook():
             logger.info("No action required for this alert")
             tool_result = "No action taken"
 
+        # ── Record MTTR metrics ──────────────────────────────────
+        action_taken_at = datetime.now(timezone.utc)
+        # Response latency: action_taken_at − webhook_received_at
+        try:
+            t_recv = datetime.fromisoformat(webhook_received_at)
+            response_latency = (action_taken_at - t_recv).total_seconds()
+            AGENT_RESPONSE_LATENCY.labels(agent_type="ai").set(response_latency)
+        except Exception:
+            response_latency = None
+
+        # MTTR: action_taken_at − alert startsAt
+        try:
+            starts_at_raw = alert.get("startsAt", "")
+            if starts_at_raw:
+                t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
+                mttr = (action_taken_at - t_start).total_seconds()
+                AGENT_MTTR.labels(agent_type="ai").set(mttr)
+            else:
+                mttr = None
+        except Exception:
+            mttr = None
+
         # Ghi vào action log
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": action_taken_at.isoformat(),
             "webhook_received_at": webhook_received_at,
             "alert": alert_name,
             "scenario": scenario,
@@ -518,6 +550,8 @@ def webhook():
             "confidence": confidence,
             "result": tool_result,
             "llm_latency_s": round(llm_latency, 3),
+            "response_latency_s": round(response_latency, 3) if response_latency is not None else None,
+            "mttr_s": round(mttr, 3) if mttr is not None else None,
         }
         action_log.append(entry)
         if len(action_log) > 100:

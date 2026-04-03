@@ -256,7 +256,7 @@ core.*
 .claude/
 
 # Local-generated docs (not meant for repo)
-docs/
+docs/superpowers
 
 # ── Keep These Files ─────────────────────────────────────────
 # Force include certain files that might be ignored by patterns above

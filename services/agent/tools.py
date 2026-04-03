@@ -5,7 +5,6 @@ Mỗi tool nhận tham số rõ ràng và trả về string mô tả kết quả
 Agent sẽ chọn tool phù hợp dựa trên reasoning của Gemini.
 """
 
-import subprocess
 import logging
 import requests
 import docker
@@ -17,9 +16,6 @@ _docker_client = None
 
 # ── Configuration from environment variables ──────────────────
 DEFAULT_CONTAINER = os.environ.get("TARGET_CONTAINER_NAME", "target-app")
-DEFAULT_INTERFACE = os.environ.get("DEFAULT_NETWORK_INTERFACE", "eth0")
-DEFAULT_RATE_LIMIT = os.environ.get("DEFAULT_RATE_LIMIT", "50/sec")
-RATE_LIMIT_BURST = os.environ.get("RATE_LIMIT_BURST", "200")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000")
 GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN", "")
@@ -173,30 +169,7 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
         return f"ERROR: {e}"
 
 
-# ── Tool 3: Block IP bằng iptables ──────────────────────────
-def block_ip(ip: str) -> str:
-    """
-    Thêm rule iptables block IP tấn công.
-    Dùng khi: phát hiện DDoS từ IP cụ thể.
-    LƯU Ý: cần chạy container với --cap-add=NET_ADMIN
-    """
-    try:
-        result = subprocess.run(
-            ["iptables", "-I", "INPUT", "1", "-s", ip, "-j", "DROP"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0:
-            msg = f"Blocked IP {ip} via iptables"
-        else:
-            msg = f"iptables failed (code {result.returncode}): {result.stderr.strip()}"
-        logger.info(f"[block_ip] {msg}")
-        return msg
-    except Exception as e:
-        logger.error(f"[block_ip] Error: {e}")
-        return f"ERROR: {e}"
-
-
-# ── Tool 4: Restart service (container) ─────────────────────
+# ── Tool 3: Restart service (container) ─────────────────────
 def restart_service(container_name: str = None) -> str:
     """
     Restart container để phục hồi service.
@@ -249,33 +222,7 @@ def get_prometheus_metrics(query: str) -> str:
         return f"ERROR: {e}"
 
 
-# ── Tool 6: Giảm tải bằng rate limit (iptables limit) ───────
-def apply_rate_limit(interface: str = None, rate: str = None) -> str:
-    """
-    Áp dụng rate limit trên interface mạng để chặn flood.
-    Dùng khi: DDoS nhưng không có IP cụ thể để block.
-    """
-    if interface is None:
-        interface = DEFAULT_INTERFACE
-    if rate is None:
-        rate = DEFAULT_RATE_LIMIT
-
-    try:
-        result = subprocess.run(
-            ["iptables", "-A", "INPUT", "-i", interface,
-             "-p", "tcp", "--dport", "5000",
-             "-m", "limit", f"--limit={rate}", f"--limit-burst={RATE_LIMIT_BURST}",
-             "-j", "ACCEPT"],
-            capture_output=True, text=True, timeout=10
-        )
-        msg = f"Rate limit {rate} on {interface}: code {result.returncode}"
-        logger.info(f"[apply_rate_limit] {msg}")
-        return msg
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
-# ── Tool 7: Check system load ──────────────────────────────
+# ── Tool 4: Query Prometheus metrics ────────────────────────
 def check_system_load() -> str:
     """
     Kiểm tra system load average và processes có thể gây load cao.
@@ -460,7 +407,7 @@ def post_grafana_annotation(text: str, tags: list) -> str:
     Called automatically after every tool execution — failure is non-fatal.
 
     Args:
-        text: annotation text, e.g. "🤖 apply_rate_limit — ddos | CPU:45% MEM:60%"
+        text: annotation text, e.g. "🤖 restart_service — ddos | CPU:45% MEM:60%"
         tags: list of tag strings, e.g. ["aiops", "auto-remediation", "ddos"]
 
     Returns:
@@ -490,15 +437,15 @@ def post_grafana_annotation(text: str, tags: list) -> str:
 
 
 TOOLS = {
-    "get_top_processes":       get_top_processes,
-    "kill_process":            kill_process,
-    "block_ip":                block_ip,
-    "restart_service":         restart_service,
-    "apply_rate_limit":        apply_rate_limit,
-    "check_system_load":       check_system_load,
-    "reduce_system_load":      reduce_system_load,
-    "auto_kill_cpu_stress":    auto_kill_cpu_stress,
-    "post_grafana_annotation": post_grafana_annotation,
+    "get_top_processes":    get_top_processes,
+    "kill_process":         kill_process,
+    "restart_service":      restart_service,
+    "check_system_load":    check_system_load,
+    "reduce_system_load":   reduce_system_load,
+    "auto_kill_cpu_stress": auto_kill_cpu_stress,
+    # get_prometheus_metrics  — internal diagnostic utility, not AI-callable
+    # post_grafana_annotation — called automatically by webhook(), not by LLM
+    # validate_container_exists — internal guard, not AI-callable
 }
 
 TOOLS_DESCRIPTION = f"""
@@ -510,8 +457,7 @@ Available tools grouped by scenario (use ONLY the tools listed for the active sc
 - kill_process(container_name, process_name): Kill a named process (default container: {DEFAULT_CONTAINER})
 
 [scenario=ddos] Network / request rate attack:
-- apply_rate_limit(interface, rate): Rate-limit incoming traffic via iptables (default: interface="{DEFAULT_INTERFACE}", rate="{DEFAULT_RATE_LIMIT}")
-- block_ip(ip): Block a specific attacking IP via iptables
+- restart_service(container_name): Restart the target container to recover from flood (default: {DEFAULT_CONTAINER})
 
 [scenario=memory_stress] Memory exhaustion:
 - restart_service(container_name): Restart container to free memory (default: {DEFAULT_CONTAINER})
@@ -520,6 +466,9 @@ Available tools grouped by scenario (use ONLY the tools listed for the active sc
 [scenario=system_load] High system load average:
 - reduce_system_load(): Reduce system load — restarts containers and clears state (NO parameters)
 - check_system_load(): Read current load metrics (NO parameters)
+
+[diagnostic] Query Prometheus for additional context before acting (any scenario):
+- get_prometheus_metrics(query): Run a raw PromQL query and return current value — use to confirm severity or check related metrics
 
 NOTE: post_grafana_annotation is called automatically — do NOT include it in your action response.
 CRITICAL: reduce_system_load() and check_system_load() take NO parameters — params must be {{}}.

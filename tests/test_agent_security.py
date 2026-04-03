@@ -24,7 +24,7 @@ class TestAgentSecurity(unittest.TestCase):
         # Use explicit PIPE instead of capture_output=True to avoid WinAPI
         # handle-duplication bug on Windows Python 3.14 when timeout is set.
         result = subprocess.run(
-            [sys.executable, "agent/agent.py"],
+            [sys.executable, "services/agent/agent.py"],
             env={**os.environ, "AGENT_API_KEY": ""},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -40,7 +40,7 @@ class TestAgentSecurity(unittest.TestCase):
     def test_endpoint_auth(self):
         """Verify /webhook and /logs require X-Agent-Key authentication."""
         import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agent'))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'agent'))
         import agent as agent_module
 
         app = agent_module.app

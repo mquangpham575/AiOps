@@ -1,5 +1,5 @@
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -216,7 +216,7 @@ def test_export_csv(runner, tmp_path):
         "response_latency_s":   3.0,
         "remediation_s":        38.0,
         "mttr_s":               55.0,
-        "action":               "apply_rate_limit",
+        "action":               "restart_service",
         "confidence":           0.91,
         "llm_latency_s":        2.3,
         "baseline_cpu_pct":     12.0,
@@ -237,5 +237,5 @@ def test_export_csv(runner, tmp_path):
     # Values written correctly
     assert "55.0" in content       # mttr_s
     assert "14.0" in content       # detection_latency_s
-    assert "apply_rate_limit"     in content
+    assert "restart_service"     in content
 

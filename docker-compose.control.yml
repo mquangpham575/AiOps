@@ -1,0 +1,125 @@
+# docker-compose.control.yml — PC Control Plane
+# Services: prometheus, alertmanager, grafana, ai-agent, rule-based-agent
+#
+# Usage:
+#   docker compose -f docker-compose.control.yml up -d
+#
+# IMPORTANT: Replace <AZURE_VM_IP> with the actual Azure VM public IP before running.
+
+networks:
+  control-net:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+services:
+  # ── PROMETHEUS ───────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./config/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    networks:
+      - control-net
+    restart: unless-stopped
+
+  # ── ALERTMANAGER ─────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    volumes:
+      - ./config/alertmanager:/etc/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+    networks:
+      - control-net
+    restart: unless-stopped
+
+  # ── GRAFANA ──────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/aiops-overview.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    networks:
+      - control-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ── AI AGENT ─────────────────────────────────────────────────
+  agent:
+    build: ./services/agent
+    container_name: aiops-agent
+    env_file:
+      - .env
+    environment:
+      - TARGET_CONTAINER_NAME=target-app
+      - PROMETHEUS_URL=http://prometheus:9090
+      - DOCKER_HOST=tcp://<AZURE_VM_IP>:2375
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_TOKEN=${GRAFANA_TOKEN:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - control-net
+    depends_on:
+      - prometheus
+      - alertmanager
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+        reservations:
+          memory: 128M
+          cpus: "0.1"
+
+  # ── RULE-BASED AGENT ─────────────────────────────────────────
+  rule-based-agent:
+    build: ./services/rule-based-agent
+    container_name: rule-based-agent
+    environment:
+      - TARGET_CONTAINER_NAME=target-app
+      - DOCKER_HOST=tcp://<AZURE_VM_IP>:2375
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "5001:5001"
+    networks:
+      - control-net
+    depends_on:
+      - prometheus
+      - alertmanager
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.3"
+        reservations:
+          memory: 64M
+          cpus: "0.05"

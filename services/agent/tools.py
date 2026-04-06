@@ -443,7 +443,7 @@ TOOLS = {
     "check_system_load":    check_system_load,
     "reduce_system_load":   reduce_system_load,
     "auto_kill_cpu_stress": auto_kill_cpu_stress,
-    # get_prometheus_metrics  — internal diagnostic utility, not AI-callable
+    "get_prometheus_metrics": get_prometheus_metrics,
     # post_grafana_annotation — called automatically by webhook(), not by LLM
     # validate_container_exists — internal guard, not AI-callable
 }

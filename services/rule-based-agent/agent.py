@@ -14,6 +14,8 @@ import os
 import time
 import logging
 from datetime import datetime, timezone
+from collections import deque
+import threading
 
 import docker
 from flask import Flask, request, jsonify
@@ -80,14 +82,26 @@ DEFAULT_ACTION = "log_only"
 
 # ── Idempotency cooldown ────────────────────────────────────
 _cooldown: dict[str, float] = {}
+_cooldown_lock = threading.Lock()
 
+def _cleanup_cooldown():
+    """Periodic cleanup of old cooldown entries"""
+    now = time.time()
+    for k in list(_cooldown.keys()):
+        if now - _cooldown.get(k, 0) > 60:
+            _cooldown.pop(k, None)
 
 def is_on_cooldown(key: str, ttl: int = 30) -> bool:
-    return time.time() - _cooldown.get(key, 0) < ttl
+    with _cooldown_lock:
+        return time.time() - _cooldown.get(key, 0) < ttl
 
 
 def set_cooldown(key: str):
-    _cooldown[key] = time.time()
+    with _cooldown_lock:
+        _cooldown[key] = time.time()
+        # Periodically clean up dictionary to prevent unbounded growth
+        if len(_cooldown) > 100:
+            _cleanup_cooldown()
 
 
 # ── Action executors ─────────────────────────────────────────
@@ -125,12 +139,30 @@ ACTIONS = {
 }
 
 
-# ── Action log ───────────────────────────────────────────────
-action_log: list[dict] = []
+# ── Action executor auth ─────────────────────────────────────
+import hmac
+AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 
+def require_api_key(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        provided = request.headers.get("X-Agent-Key", "")
+        auth_header = request.headers.get("Authorization", "")
+        if not provided and auth_header.startswith("Bearer "):
+            provided = auth_header.split(" ")[-1]
+        if not AGENT_API_KEY or not hmac.compare_digest(provided, AGENT_API_KEY):
+            logger.warning(f"Unauthorized access attempt to rule-based agent")
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+# ── Action log ───────────────────────────────────────────────
+action_log = deque(maxlen=100)
 
 # ── Webhook endpoint ─────────────────────────────────────────
 @app.route("/alert", methods=["POST"])
+@require_api_key
 def alert_webhook():
     payload = request.get_json(force=True, silent=True)
     if not payload:
@@ -220,8 +252,6 @@ def alert_webhook():
             "mttr_s": round(mttr, 3) if mttr is not None else None,
         }
         action_log.append(entry)
-        if len(action_log) > 100:
-            action_log.pop(0)
         results.append(entry)
 
     return jsonify(results), 200
@@ -233,11 +263,17 @@ def health():
 
 
 @app.route("/logs")
+@require_api_key
 def logs():
-    limit = int(request.args.get("limit", 50))
-    return jsonify(action_log[-limit:])
+    try:
+        limit = min(int(request.args.get("limit", 50)), 100)
+    except (ValueError, TypeError):
+        limit = 50
+    return jsonify(list(action_log)[-limit:])
 
 
 if __name__ == "__main__":
+    if not AGENT_API_KEY:
+        logger.warning("AGENT_API_KEY is not set - starting insecurely if not overridden!")
     logger.info("Rule-Based Agent starting on port 5001...")
     app.run(host="0.0.0.0", port=5001, threaded=True, debug=False)

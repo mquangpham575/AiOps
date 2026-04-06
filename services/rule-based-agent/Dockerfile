@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agent.py .
 
+RUN useradd -r -s /bin/false appuser && chown -R appuser /app
+USER appuser
+
 EXPOSE 5001
 
 CMD ["python", "agent.py"]

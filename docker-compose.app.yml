@@ -17,6 +17,11 @@ services:
       - "80:5000"
     networks:
       - app-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
     deploy:
       resources:
@@ -44,6 +49,11 @@ services:
       - "9100:9100"
     networks:
       - app-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   # ── CADVISOR (container metrics) ─────────────────────────────
@@ -60,4 +70,9 @@ services:
       - "8080:8080"
     networks:
       - app-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped

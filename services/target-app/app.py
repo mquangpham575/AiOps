@@ -84,8 +84,9 @@ def memory_stress():
         hold_s = 10
     time.sleep(hold_s)
 
-    # Release: let _buffer go out of scope
+    # Release and force immediate GC so Prometheus sees a clean memory drop
     del _buffer
+    import gc; gc.collect()
 
     return jsonify({
         "status": "ok",

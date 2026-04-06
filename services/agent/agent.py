@@ -27,6 +27,8 @@ import sys
 import inspect
 import re
 from datetime import datetime, timezone
+import threading
+from collections import deque
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types as genai_types  # GenerateContentConfig, etc.
@@ -90,6 +92,7 @@ _genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Throttle & Auth ───────────────────────────────────────────
 _last_llm_call: float = 0.0
+_llm_lock = threading.Lock()
 MIN_INTERVAL: float = float(os.environ.get("AI_THROTTLE_INTERVAL", "3.0"))
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 
@@ -118,7 +121,7 @@ def require_api_key(f):
     return decorated
 
 # ── Action log: lưu 100 action gần nhất ─────────────────────
-action_log: list[dict] = []
+action_log = deque(maxlen=100)
 
 # ── Prometheus query map per scenario ────────────────────────
 _PROM_QUERIES = {
@@ -194,17 +197,21 @@ def enrich_alert_context(alert: dict) -> dict:
     queries = _PROM_QUERIES.get(scenario, {})
     ctx: dict = {}
 
-    for key, query in queries.items():
-        raw = _prom_query(query)
-        # Convert byte-level metrics to MB for readability
-        if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
-            new_key = key.replace("_b", "_mb")
-            ctx[new_key] = round(raw / (1024 * 1024), 1)
-        # Convert latency from seconds to milliseconds
-        elif key == "latency_s" and raw != "N/A":
-            ctx["latency_ms"] = round(raw * 1000, 1)
-        else:
-            ctx[key] = raw if raw == "N/A" else round(raw, 2)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 5) or 1) as executor:
+        future_to_key = {executor.submit(_prom_query, query): key for key, query in queries.items()}
+        for future in concurrent.futures.as_completed(future_to_key):
+            key = future_to_key[future]
+            raw = future.result()
+            # Convert byte-level metrics to MB for readability
+            if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
+                new_key = key.replace("_b", "_mb")
+                ctx[new_key] = round(raw / (1024 * 1024), 1)
+            # Convert latency from seconds to milliseconds
+            elif key == "latency_s" and raw != "N/A":
+                ctx["latency_ms"] = round(raw * 1000, 1)
+            else:
+                ctx[key] = raw if raw == "N/A" else round(raw, 2)
 
     logger.info(f"[enrich] scenario={scenario!r} context={ctx}")
     return ctx
@@ -264,10 +271,12 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
     MAX_RETRIES = 1
 
     # Throttle
-    wait = MIN_INTERVAL - (time.time() - _last_llm_call)
-    if wait > 0:
-        logger.info(f"Throttle: chờ {wait:.1f}s trước khi gọi Gemini...")
-        time.sleep(wait)
+    with _llm_lock:
+        wait = MIN_INTERVAL - (time.time() - _last_llm_call)
+        if wait > 0:
+            logger.info(f"Throttle: chờ {wait:.1f}s trước khi gọi Gemini...")
+            time.sleep(wait)
+        _last_llm_call = time.time() + (wait if wait > 0 else 0)
 
     start = time.time()
     try:
@@ -275,12 +284,14 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
             model=GEMINI_MODEL,
             contents=SYSTEM_PROMPT + "\n\n" + prompt,
             config=genai_types.GenerateContentConfig(
-                max_output_tokens=384,
+                max_output_tokens=512,
                 temperature=0.2,
             ),
         )
         latency = time.time() - start
-        _last_llm_call = time.time()
+        
+        with _llm_lock:
+            _last_llm_call = time.time()
 
         raw = response.text.strip()
 
@@ -310,7 +321,7 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
             decision = json.loads(raw)
         except json.JSONDecodeError as e:
             # Try to find JSON block in text (handles edge cases)
-            json_match = re.search(r'\{.*?\}', raw, re.DOTALL)
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             if json_match:
                 json_text = json_match.group()
                 logger.debug(f"Extracted JSON block: {json_text[:100]}...")
@@ -554,8 +565,6 @@ def webhook():
             "mttr_s": round(mttr, 3) if mttr is not None else None,
         }
         action_log.append(entry)
-        if len(action_log) > 100:
-            action_log.pop(0)
 
         results.append(entry)
 
@@ -575,15 +584,22 @@ def health():
 @require_api_key
 def logs():
     """Trả về 50 action gần nhất — dùng để xem trong video demo."""
-    limit = int(request.args.get("limit", 50))
-    return jsonify(action_log[-limit:])
+    try:
+        limit = min(int(request.args.get("limit", 50)), 100)
+    except (ValueError, TypeError):
+        limit = 50
+    return jsonify(list(action_log)[-limit:])
 
 
 @app.route("/logs/ui")
+@require_api_key
 def logs_ui():
-    """Live HTML table of the 50 most recent AI actions — for screen recording. No auth needed (read-only)."""
-    limit = int(request.args.get("limit", 50))
-    entries = action_log[-limit:]
+    """Live HTML table of the 50 most recent AI actions — for screen recording."""
+    try:
+        limit = min(int(request.args.get("limit", 50)), 100)
+    except (ValueError, TypeError):
+        limit = 50
+    entries = list(action_log)[-limit:]
 
     rows = ""
     for e in reversed(entries):

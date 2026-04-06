@@ -33,7 +33,7 @@ variable "ssh_public_key_path" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR block allowed to reach port 22 and 2375. Default * for simplicity in school project."
+  description = "CIDR block allowed to reach port 22 and 2375."
   type        = string
-  default     = "*"
+  default     = "14.187.86.16/32"
 }

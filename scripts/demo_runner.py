@@ -20,10 +20,16 @@ from datetime import datetime, timezone
 
 import requests
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # ── Configuration ────────────────────────────────────────────
-TARGET_URL     = os.environ.get("TARGET_URL",     "http://localhost:5000")
+_azure_ip = os.environ.get("AZURE_VM_IP")
+_default_target = f"http://{_azure_ip}:80" if _azure_ip else "http://localhost:5000"
+
+TARGET_URL     = os.environ.get("TARGET_URL",     _default_target)
 AGENT_URL      = os.environ.get("AGENT_URL",      "http://localhost:8080")
-PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9090")
+PROMETHEUS_URL = "http://localhost:9090"
 AGENT_KEY      = os.environ.get("AGENT_API_KEY",  "")
 
 SCENARIO_TIMEOUT_S = 180
@@ -322,10 +328,14 @@ class DemoRunner:
         baseline = self.record_baseline()
         print(f"  Baseline: CPU={baseline['cpu_pct']}% MEM={baseline['memory_pct']}%")
 
+        env = {**os.environ}
+        if _azure_ip:
+            env["DOCKER_HOST"] = f"tcp://{_azure_ip}:2375"
+
         proc = subprocess.Popen([
             "docker", "exec", "target-app",
             "stress-ng", "--cpu", "4", "--timeout", "90s",
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
         # T1: wait for Prometheus alert
         print("  ⏳ Waiting for alert to fire in Prometheus...")

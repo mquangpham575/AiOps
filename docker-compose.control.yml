@@ -32,7 +32,6 @@ services:
       - "--web.console.libraries=/usr/share/prometheus/console_libraries"
       - "--web.console.templates=/usr/share/prometheus/consoles"
       - "--web.enable-lifecycle"
-      - "--config.expand-env"
       - "--storage.tsdb.retention.time=7d"
     ports:
       - "9090:9090"

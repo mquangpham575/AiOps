@@ -9,7 +9,7 @@ param (
 
 $RG = "rg-aiops"
 $VM_NAME = "aiops-vm"
-$AZURE_IP = "104.215.158.157"
+$global:azureIp = (Select-String -Path ".env" -Pattern "^AZURE_VM_IP=(.*)").Matches.Groups[1].Value
 
 switch ($Action) {
     "start" {
@@ -17,9 +17,12 @@ switch ($Action) {
         az vm start -g $RG -n $VM_NAME
         
         Write-Host "📡 Connecting to Docker and starting Application Plane..." -ForegroundColor Cyan
-        $env:DOCKER_HOST = "tcp://$AZURE_IP:2375"
+        $env:DOCKER_HOST = "tcp://$global:azureIp:2375"
         docker compose -f docker-compose.app.yml up -d --build
         
+        Write-Host "⚙️ Generating dynamic prometheus.yml..." -ForegroundColor Cyan
+        (Get-Content config\prometheus\prometheus.yml.template) -replace '\$\{AZURE_VM_IP\}', $global:azureIp | Set-Content config\prometheus\prometheus.yml
+
         Write-Host "📦 Starting Control Plane (Local PC)..." -ForegroundColor Cyan
         $env:DOCKER_HOST = ""
         docker compose -f docker-compose.control.yml up -d --build
@@ -32,7 +35,7 @@ switch ($Action) {
         docker compose -f docker-compose.control.yml down
         
         Write-Host "🛑 Stopping Remote Application Plane..." -ForegroundColor Yellow
-        $env:DOCKER_HOST = "tcp://$AZURE_IP:2375"
+        $env:DOCKER_HOST = "tcp://$global:azureIp:2375"
         docker compose -f docker-compose.app.yml down
         
         Write-Host "💤 Deallocating Azure VM to save credits..." -ForegroundColor Yellow

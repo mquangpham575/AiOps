@@ -30,6 +30,8 @@ receivers:
         send_resolved: true
         http_config:
           follow_redirects: true
+          authorization:
+            credentials: "agent_secret_key_nt531"
 
 inhibit_rules:
   - source_match:

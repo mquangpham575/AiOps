@@ -84,6 +84,16 @@ groups:
           summary: "Container target-app CPU cao"
           description: "Container CPU: {{ $value | humanize }}%"
 
+      - alert: CriticalCPUStress
+        expr: rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100 > 95
+        for: 15s
+        labels:
+          severity: critical
+          scenario: cpu_stress
+        annotations:
+          summary: "Critical CPU Stress detected"
+          description: "Target app is under extreme CPU pressure: {{ $value | humanize }}%"
+
       # ── System Load alerts ──────────────────────────────────────
       - alert: HighSystemLoad
         expr: node_load1 > 8.0

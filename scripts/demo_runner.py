@@ -340,7 +340,7 @@ class DemoRunner:
         # T1: wait for Prometheus alert
         print("  ⏳ Waiting for alert to fire in Prometheus...")
         t1 = self.wait_for_alert_fired(
-            ["ContainerHighCPU", "HighCPUUsage", "CriticalCPUStress"], after=t0
+            ["ContainerHighCPU", "HighCPUUsage"], after=t0
         )
         if t1:
             print(f"  🔔 Alert fired   T1={t1.strftime('%H:%M:%S')}")

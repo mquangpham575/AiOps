@@ -268,3 +268,5 @@ docs/superpowers
 .terraform/
 .terraform.lock.hcl
 terraform.tfstate*
+
+config/prometheus/prometheus.yml

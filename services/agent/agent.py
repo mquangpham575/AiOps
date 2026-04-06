@@ -152,7 +152,6 @@ _PROM_QUERIES = {
 _ALERT_SCENARIO_MAP = {
     "HighCPUUsage":       "cpu_stress",
     "ContainerHighCPU":   "cpu_stress",
-    "CriticalCPUStress":  "cpu_stress",
     "HighRequestRate":    "ddos",
     "HighRequestLatency": "ddos",
     "HighMemoryUsage":    "memory_stress",
@@ -592,7 +591,6 @@ def logs():
 
 
 @app.route("/logs/ui")
-@require_api_key
 def logs_ui():
     """Live HTML table of the 50 most recent AI actions — for screen recording."""
     try:

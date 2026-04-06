@@ -17,8 +17,15 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Configuration
+# Load local IP/Config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../../.env"
+if [ -f "$ENV_FILE" ]; then
+    AZURE_VM_IP=$(grep '^AZURE_VM_IP=' "$ENV_FILE" | cut -d'=' -f2-)
+fi
+
 AGENT_URL="http://localhost:8080"
-TARGET_URL="http://localhost:5000"
+TARGET_URL="http://${AZURE_VM_IP:-localhost}:80"
 PROMETHEUS_URL="http://localhost:9090"
 TARGET_CONTAINER="target-app"
 RESULTS_DIR="results"

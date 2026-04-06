@@ -132,6 +132,19 @@ docker compose -f docker-compose.control.yml up -d --build
 | **AI Agent Logs** | `http://localhost:8080/logs/ui` | Live view of AI reasoning and actions |
 | **AlertManager** | `http://localhost:9093` | Review active alerts |
 
+### 3. Automated Power Management
+To quickly start or stop the entire distributed environment without manual `docker compose` commands, use the provided PowerShell script. This is the **recommended** way to run the project.
+```powershell
+# Start Azure VM and bring up all containers locally & remotely
+.\scripts\aiops-power.ps1 -Action start
+
+# Check status of the VM and containers
+.\scripts\aiops-power.ps1 -Action status
+
+# Stop and deallocate Azure VM to save credits
+.\scripts\aiops-power.ps1 -Action stop
+```
+
 ---
 
 ## Operations and Benchmarking

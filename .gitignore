@@ -265,3 +265,6 @@ docs/superpowers
 !docker-compose.yml
 !*/Dockerfile
 !
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate*

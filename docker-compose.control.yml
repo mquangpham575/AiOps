@@ -20,8 +20,12 @@ services:
     image: prom/prometheus:latest
     container_name: prometheus
     volumes:
-      - ./config/prometheus:/etc/prometheus
-      - prometheus_data:/prometheus
+      - type: bind
+        source: ./config/prometheus
+        target: /etc/prometheus
+      - type: volume
+        source: prometheus_data
+        target: /prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -39,7 +43,9 @@ services:
     image: prom/alertmanager:latest
     container_name: alertmanager
     volumes:
-      - ./config/alertmanager:/etc/alertmanager
+      - type: bind
+        source: ./config/alertmanager
+        target: /etc/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
     ports:
@@ -57,9 +63,15 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/aiops-overview.json
     volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning/dashboards
-      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+      - type: volume
+        source: grafana_data
+        target: /var/lib/grafana
+      - type: bind
+        source: ./config/grafana/provisioning
+        target: /etc/grafana/provisioning/dashboards
+      - type: bind
+        source: ./config/grafana/datasources
+        target: /etc/grafana/provisioning/datasources
     ports:
       - "3000:3000"
     networks:
@@ -77,7 +89,7 @@ services:
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
-      - DOCKER_HOST=tcp://<AZURE_VM_IP>:2375
+      - DOCKER_HOST=tcp://104.215.158.157:2375
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
       - GRAFANA_URL=http://grafana:3000
@@ -105,7 +117,7 @@ services:
     container_name: rule-based-agent
     environment:
       - TARGET_CONTAINER_NAME=target-app
-      - DOCKER_HOST=tcp://<AZURE_VM_IP>:2375
+      - DOCKER_HOST=tcp://104.215.158.157:2375
       - PYTHONUNBUFFERED=1
     ports:
       - "5001:5001"

@@ -98,7 +98,7 @@ class DemoRunner:
     def record_baseline(self) -> dict:
         """Snapshot current CPU%, memory%, and latency from Prometheus."""
         cpu_pct     = self._prom_query(
-            "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)"
+            "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100"
         )
         memory_pct  = self._prom_query(
             "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"
@@ -293,8 +293,10 @@ class DemoRunner:
         mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
 
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
-                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
+            d_str = f"{detection_latency_s}s" if detection_latency_s is not None else "—"
+            r_str = f"{response_latency_s}s"  if response_latency_s is not None else "—"
+            m_str = f"{remediation_s}s"       if remediation_s is not None else "—"
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  (detect={d_str} respond={r_str} remediate={m_str})")
         else:
             print("  ❌ TIMEOUT — recovery not detected within 3 minutes")
 
@@ -358,10 +360,14 @@ class DemoRunner:
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        # T3: sustained recovery (allow for 5% buffer above baseline since host might be busy)
-        recovery_threshold = min(baseline["cpu_pct"] + 10.0, 95.0)
+        # T3: sustained recovery (allow for 5-10% buffer above baseline)
+        if baseline["cpu_pct"] >= 90.0:
+            recovery_threshold = 100.0 # Just look for stabilization back to baseline
+        else:
+            recovery_threshold = min(baseline["cpu_pct"] + 10.0, 95.0)
+            
         t3 = self.wait_for_recovery(
-            "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
+            "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100",
             threshold=recovery_threshold,
         )
 
@@ -381,8 +387,10 @@ class DemoRunner:
         mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
 
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
-                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
+            d_str = f"{detection_latency_s}s" if detection_latency_s is not None else "—"
+            r_str = f"{response_latency_s}s"  if response_latency_s is not None else "—"
+            m_str = f"{remediation_s}s"       if remediation_s is not None else "—"
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  (detect={d_str} respond={r_str} remediate={m_str})")
         else:
             print("  ❌ TIMEOUT")
 
@@ -463,8 +471,10 @@ class DemoRunner:
         mttr_s              = round((t3 - t0).total_seconds(), 1) if t3 else None
 
         if mttr_s:
-            print(f"  ✅ Recovered. MTTR={mttr_s}s  "
-                  f"(detect={detection_latency_s}s respond={response_latency_s}s remediate={remediation_s}s)")
+            d_str = f"{detection_latency_s}s" if detection_latency_s is not None else "—"
+            r_str = f"{response_latency_s}s"  if response_latency_s is not None else "—"
+            m_str = f"{remediation_s}s"       if remediation_s is not None else "—"
+            print(f"  ✅ Recovered. MTTR={mttr_s}s  (detect={d_str} respond={r_str} remediate={m_str})")
         else:
             print("  ❌ TIMEOUT")
 

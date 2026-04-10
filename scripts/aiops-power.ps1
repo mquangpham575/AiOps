@@ -2,7 +2,7 @@
 # Provides start/stop/status actions for both the Azure VM and Local Docker containers.
 
 param (
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$true, Position=0)]
     [ValidateSet("start", "stop", "status")]
     $Action
 )
@@ -29,15 +29,18 @@ if ([string]::IsNullOrWhiteSpace($global:azureIp) -or $global:azureIp -eq "127.0
     Write-Warning "⚠️ AZURE_VM_IP is empty or set to 127.0.0.1. Please update your .env file with the actual Azure VM IP."
 }
 
-# Check if local Docker is running
-docker info >$null 2>&1
-if ($LastExitCode -ne 0) {
-    Write-Error "❌ Docker Desktop is NOT running on your local PC. Please start Docker Desktop and truy cập lại."
-    exit
+# Check if local Docker is running (Helper function)
+function Test-DockerRunning {
+    docker info >$null 2>&1
+    return ($LastExitCode -eq 0)
 }
 
 switch ($Action) {
     "start" {
+        if (-not (Test-DockerRunning)) {
+            Write-Error "❌ Docker Desktop is NOT running on your local PC. Please start Docker Desktop to launch the Control Plane."
+            exit
+        }
         Write-Host "🚀 Checking Azure VM ($VM_NAME) in RG ($RG)..." -ForegroundColor Cyan
         $vmExists = az vm show -g $RG -n $VM_NAME --query "name" -o tsv 2>$null
         if ($null -eq $vmExists) {
@@ -71,11 +74,15 @@ switch ($Action) {
     }
     
     "stop" {
-        Write-Host "🛑 Stopping Local Control Plane..." -ForegroundColor Yellow
-        docker compose -f docker-compose.control.yml down
-        
-        Write-Host "🛑 Stopping Remote Application Plane..." -ForegroundColor Yellow
-        docker -H "tcp://$global:azureIp:2375" compose -f docker-compose.app.yml down
+        if (Test-DockerRunning) {
+            Write-Host "🛑 Stopping Local Control Plane..." -ForegroundColor Yellow
+            docker compose -f docker-compose.control.yml down
+            
+            Write-Host "🛑 Stopping Remote Application Plane..." -ForegroundColor Yellow
+            docker -H "tcp://$global:azureIp:2375" compose -f docker-compose.app.yml down
+        } else {
+            Write-Warning "⚠️ Docker Desktop is not running. Skipping Docker container shutdown."
+        }
         
         Write-Host "💤 Deallocating Azure VM to save credits..." -ForegroundColor Yellow
         az vm deallocate -g $RG -n $VM_NAME

@@ -17,7 +17,6 @@ NC='\033[0m'
 
 # Configuration
 AGENT_URL="http://localhost:8080"
-TARGET_URL="http://localhost:5000"
 PROMETHEUS_URL="http://localhost:9090"
 GRAFANA_URL="http://localhost:3000"
 BASELINE_DURATION=120  # 2 minutes
@@ -28,8 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../../.env"
 if [ -f "$ENV_FILE" ]; then
     AGENT_API_KEY=$(grep '^AGENT_API_KEY=' "$ENV_FILE" | cut -d'=' -f2-)
+    AZURE_VM_IP=$(grep '^AZURE_VM_IP=' "$ENV_FILE" | cut -d'=' -f2-)
 fi
 AGENT_API_KEY="${AGENT_API_KEY:-}"
+TARGET_URL="http://${AZURE_VM_IP:-localhost}:80"
 
 # Utility functions
 log() { echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $1"; }

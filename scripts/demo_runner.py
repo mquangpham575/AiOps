@@ -268,11 +268,12 @@ class DemoRunner:
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        # T3: wait for sustained recovery
+        # T3: wait for sustained recovery (back to near baseline or below 500ms)
+        recovery_threshold = max(baseline["latency_ms"] + 50.0, 500.0)
         t3 = self.wait_for_recovery(
             "rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m])"
             " / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m]) * 1000",
-            threshold=1000.0,
+            threshold=recovery_threshold,
         )
 
         proc.terminate()
@@ -357,10 +358,11 @@ class DemoRunner:
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        # T3: sustained recovery
+        # T3: sustained recovery (allow for 5% buffer above baseline since host might be busy)
+        recovery_threshold = min(baseline["cpu_pct"] + 10.0, 95.0)
         t3 = self.wait_for_recovery(
             "100 - (avg(rate(node_cpu_seconds_total{mode='idle'}[1m])) * 100)",
-            threshold=30.0,
+            threshold=recovery_threshold,
         )
 
         proc.terminate()
@@ -438,10 +440,11 @@ class DemoRunner:
                 break
             time.sleep(POLL_INTERVAL_S)
 
-        # T3: sustained recovery
+        # T3: sustained recovery (allow for 5% buffer above baseline)
+        recovery_threshold = min(baseline["memory_pct"] + 5.0, 95.0)
         t3 = self.wait_for_recovery(
             "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
-            threshold=60.0,
+            threshold=recovery_threshold,
         )
 
         proc.terminate()

@@ -270,3 +270,7 @@ docs/superpowers
 terraform.tfstate*
 
 config/prometheus/prometheus.yml
+
+# Unignore Grafana provisioning dashboards
+!config/grafana/provisioning/*.json
+

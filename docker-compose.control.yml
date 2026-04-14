@@ -1,10 +1,12 @@
 # docker-compose.control.yml — PC Control Plane
-# Services: prometheus, alertmanager, grafana, ai-agent, rule-based-agent
+# Services: prometheus, alertmanager, ai-agent, rule-based-agent
 #
 # Usage:
 #   docker compose -f docker-compose.control.yml up -d
 #
-# IMPORTANT: Replace <AZURE_VM_IP> with the actual Azure VM public IP before running.
+# Notes:
+# - Remote Docker access is via SSH tunnel to localhost:2375 (see scripts/aiops-power.ps1).
+# - Grafana runs on the loadgen VM; agents annotate via GRAFANA_URL=http://${AZURE_LOADGEN_IP}:3000.
 
 networks:
   control-net:
@@ -12,7 +14,6 @@ networks:
 
 volumes:
   prometheus_data:
-  grafana_data:
 
 services:
   # ── PROMETHEUS ───────────────────────────────────────────────
@@ -75,42 +76,6 @@ services:
           memory: 256M
           cpus: "0.2"
 
-  # ── GRAFANA ──────────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/aiops-overview.json
-    volumes:
-      - type: volume
-        source: grafana_data
-        target: /var/lib/grafana
-      - type: bind
-        source: ./config/grafana/provisioning
-        target: /etc/grafana/provisioning/dashboards
-      - type: bind
-        source: ./config/grafana/datasources
-        target: /etc/grafana/provisioning/datasources
-    ports:
-      - "3000:3000"
-    networks:
-      - control-net
-    depends_on:
-      - prometheus
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "0.5"
-
   # ── AI AGENT ─────────────────────────────────────────────────
   agent:
     build: ./services/agent
@@ -120,11 +85,13 @@ services:
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
-      - DOCKER_HOST=tcp://${AZURE_VM_IP}:2375
+      - DOCKER_HOST=tcp://host.docker.internal:2375
       - LOG_LEVEL=INFO
       - PYTHONUNBUFFERED=1
-      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_URL=http://${AZURE_LOADGEN_IP}:3000
       - GRAFANA_TOKEN=${GRAFANA_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     networks:
@@ -150,8 +117,10 @@ services:
       - .env
     environment:
       - TARGET_CONTAINER_NAME=target-app
-      - DOCKER_HOST=tcp://${AZURE_VM_IP}:2375
+      - DOCKER_HOST=tcp://host.docker.internal:2375
       - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "5001:5001"
     networks:

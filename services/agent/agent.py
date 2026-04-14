@@ -196,21 +196,19 @@ def enrich_alert_context(alert: dict) -> dict:
     queries = _PROM_QUERIES.get(scenario, {})
     ctx: dict = {}
 
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 5) or 1) as executor:
-        future_to_key = {executor.submit(_prom_query, query): key for key, query in queries.items()}
-        for future in concurrent.futures.as_completed(future_to_key):
-            key = future_to_key[future]
-            raw = future.result()
-            # Convert byte-level metrics to MB for readability
-            if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
-                new_key = key.replace("_b", "_mb")
-                ctx[new_key] = round(raw / (1024 * 1024), 1)
-            # Convert latency from seconds to milliseconds
-            elif key == "latency_s" and raw != "N/A":
-                ctx["latency_ms"] = round(raw * 1000, 1)
-            else:
-                ctx[key] = raw if raw == "N/A" else round(raw, 2)
+    # Query in a deterministic order (dict insertion order) to keep logs stable
+    # and to make unit tests reliable under mocked responses.
+    for key, query in queries.items():
+        raw = _prom_query(query)
+        # Convert byte-level metrics to MB for readability
+        if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
+            new_key = key.replace("_b", "_mb")
+            ctx[new_key] = round(raw / (1024 * 1024), 1)
+        # Convert latency from seconds to milliseconds
+        elif key == "latency_s" and raw != "N/A":
+            ctx["latency_ms"] = round(raw * 1000, 1)
+        else:
+            ctx[key] = raw if raw == "N/A" else round(raw, 2)
 
     logger.info(f"[enrich] scenario={scenario!r} context={ctx}")
     return ctx

@@ -12,7 +12,17 @@ output "ssh_command" {
   value       = "ssh -i ~/.ssh/aiops_key azureuser@${azurerm_public_ip.app.ip_address}"
 }
 
-output "docker_host_command" {
-  description = "Example command to test remote Docker connectivity"
-  value       = "docker -H tcp://${azurerm_public_ip.app.ip_address}:2375 ps"
+output "docker_tunnel_command" {
+  description = "SSH tunnel for remote Docker access (run before starting agents)"
+  value       = "ssh -i ~/.ssh/aiops_key -N -L 2375:/var/run/docker.sock azureuser@${azurerm_public_ip.app.ip_address}"
+}
+
+output "loadgen_public_ip" {
+  description = "The public IP address of the AiOps loadgen VM"
+  value       = azurerm_public_ip.loadgen.ip_address
+}
+
+output "loadgen_ssh_command" {
+  description = "Command to connect to the loadgen VM via SSH"
+  value       = "ssh -i ~/.ssh/aiops_key azureuser@${azurerm_public_ip.loadgen.ip_address}"
 }

@@ -3,7 +3,7 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# cloud-init script — Installs Docker and enables TCP access on port 2375
+# cloud-init script — Installs Docker (socket-only, no TCP exposure)
 # ---------------------------------------------------------------------------
 locals {
   cloud_init_script = base64encode(<<-CLOUDINIT
@@ -25,27 +25,7 @@ locals {
       - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
       - apt-get update -qq
       - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-      
-      # ---- Enable Docker TCP API (Port 2375) ----
-      # This is based on Section 6.1.3 of docs/infra_new.md
-      - mkdir -p /etc/systemd/system/docker.service.d
-      - |
-        cat <<EOF > /etc/systemd/system/docker.service.d/override.conf
-        [Service]
-        ExecStart=
-        ExecStart=/usr/bin/dockerd
-        EOF
-      - |
-        cat <<EOF > /etc/docker/daemon.json
-        {
-          "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"]
-        }
-        EOF
-        
-      # ---- Apply changes ----
-      - systemctl daemon-reload
-      - systemctl restart docker
-      
+
       # ---- Add default 'azureuser' to docker group ----
       - usermod -aG docker azureuser
 

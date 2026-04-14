@@ -29,6 +29,12 @@ import os
 # Each tuple: (start_time_s, target_users, spawn_rate)
 # The last entry with target_users=None signals end of test.
 _PROFILES: dict[str, list[tuple]] = {
+    "baseline": [
+        # Stable baseline load used for baseline-vs-ddos comparisons.
+        # Intentionally low and steady; runtime is controlled by --run-time.
+        (0,   20,  2),
+        (3600, None, 0),
+    ],
     "ddos": [
         (0,   50,  3),    # warm-up:  50 users, ramp at  3/s for 30s
         (30,  500, 10),   # ramp:    500 users, ramp at 10/s for 60s

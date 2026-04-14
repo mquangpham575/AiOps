@@ -1,0 +1,146 @@
+# ═══════════════════════════════════════════════════════════════
+# Cấu hình kịch bản đánh giá hiệu năng — NT531 AIOps PoC
+# ═══════════════════════════════════════════════════════════════
+#
+# Mục tiêu chung: Tìm cấu hình phù hợp cho hệ thống AIOps
+# thông qua đánh giá hiệu năng đa lần chạy với phân tích thống kê.
+#
+# Cách dùng:
+#   python scripts/demo_runner.py --scenario all
+#   python scripts/demo_runner.py --scenario throughput --iterations 3 --duration 300
+# ═══════════════════════════════════════════════════════════════
+
+defaults:
+  iterations: 3 # Số lần chạy mỗi kịch bản
+  duration: 300 # Thời gian mỗi pha (giây) — 5 phút
+  cooldown: 90 # Thời gian nghỉ giữa các lần chạy (giây)
+  cooldown_between: 120 # Thời gian nghỉ giữa các kịch bản (giây)
+
+scenarios:
+  # ── Kịch bản 1: Thông lượng & Độ trễ ──────────────────────
+  throughput:
+    name: "Kịch bản 1: Thông lượng & Độ trễ"
+    description: >
+      Đánh giá hiệu năng hệ thống dưới tải bình thường và tấn công DDoS.
+      So sánh overhead khi có/không có AI Agent hoạt động.
+    goal: >
+      Xác định ngưỡng throughput tối đa, đo latency percentiles (p50/p95/p99),
+      và đánh giá ảnh hưởng của AI Agent lên hiệu năng hệ thống.
+    evaluation_targets:
+      - "Latency percentiles: p50, p95, p99"
+      - "Throughput tối đa (req/s)"
+      - "Tỉ lệ lỗi dưới tải"
+      - "Overhead CPU/Memory của AI Agent"
+    phases:
+      baseline:
+        description: "Tải ổn định — đo hiệu năng nền"
+        locust_profile: "baseline"
+        duration: 300 # 5 phút
+      ddos:
+        description: "Tải DDoS — đo hiệu năng dưới tấn công"
+        locust_profile: "ddos"
+        duration: 300 # 5 phút
+    alerts:
+      - "HighRequestLatency"
+      - "HighRequestRate"
+    metrics:
+      latency_query: >
+        rate(flask_http_request_duration_seconds_sum{job="target-app"}[1m])
+        / rate(flask_http_request_duration_seconds_count{job="target-app"}[1m])
+      latency_p50: >
+        histogram_quantile(0.50,
+          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+      latency_p95: >
+        histogram_quantile(0.95,
+          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+      latency_p99: >
+        histogram_quantile(0.99,
+          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+      throughput: >
+        sum(rate(flask_http_request_total{job="target-app"}[1m]))
+      error_rate: >
+        sum(rate(flask_http_request_total{job="target-app",status=~"5.."}[1m]))
+        / sum(rate(flask_http_request_total{job="target-app"}[1m])) * 100
+      cpu_pct: >
+        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
+      memory_pct: >
+        container_memory_usage_bytes{name="target-app"}
+        / container_spec_memory_limit_bytes{name="target-app"} * 100
+      agent_cpu: >
+        rate(container_cpu_usage_seconds_total{name="aiops-agent"}[1m]) * 100
+      agent_memory: >
+        container_memory_usage_bytes{name="aiops-agent"}
+
+  # ── Kịch bản 2: Tự phục hồi CPU ──────────────────────────
+  cpu:
+    name: "Kịch bản 2: Tự phục hồi CPU"
+    description: >
+      So sánh thời gian phát hiện và xử lý sự cố CPU giữa
+      AI Agent (LLM-powered) và Rule-Based Agent.
+    agent_scenario: "cpu_stress"
+    goal: >
+      Đo MTTR (Mean Time To Recovery) cho sự cố CPU stress,
+      so sánh hiệu quả giữa hai phương pháp xử lý tự động.
+    evaluation_targets:
+      - "MTTR tổng thể (T3 - T0)"
+      - "Thời gian phát hiện (T1 - T0)"
+      - "Thời gian phản hồi (T2 - T1)"
+      - "Thời gian khắc phục (T3 - T2)"
+      - "Peak CPU% trong sự cố"
+    injection:
+      method: "stress-ng"
+      command: "stress-ng --cpu 4 --timeout {duration}s"
+      container: "target-app"
+    alerts:
+      - "ContainerHighCPU"
+      - "HighCPUUsage"
+      - "CriticalCPUStress"
+    recovery:
+      query: >
+        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
+      threshold: 30 # CPU% phải giảm dưới mức này để coi là phục hồi
+      consecutive_polls: 3
+    metrics:
+      cpu_container: >
+        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
+      cpu_host: >
+        100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)
+
+  # ── Kịch bản 3: Tự phục hồi Memory ────────────────────────
+  memory:
+    name: "Kịch bản 3: Tự phục hồi Memory"
+    description: >
+      So sánh thời gian phát hiện và xử lý sự cố memory exhaustion
+      giữa AI Agent và Rule-Based Agent.
+    agent_scenario: "memory_stress"
+    goal: >
+      Đo MTTR cho sự cố cạn kiệt bộ nhớ, đánh giá khả năng
+      restart service và phục hồi trạng thái hoạt động.
+    evaluation_targets:
+      - "MTTR tổng thể (T3 - T0)"
+      - "Thời gian phát hiện (T1 - T0)"
+      - "Thời gian phản hồi (T2 - T1)"
+      - "Thời gian khắc phục (T3 - T2)"
+      - "Peak Memory% trong sự cố"
+      - "Số lần restart container"
+    injection:
+      method: "locust"
+      locust_profile: "memory"
+      locust_tags: "memory"
+    alerts:
+      - "HighMemoryUsage"
+    recovery:
+      query: >
+        container_memory_usage_bytes{name="target-app"}
+        / container_spec_memory_limit_bytes{name="target-app"} * 100
+      threshold: 50 # Memory% phải giảm dưới mức này
+      consecutive_polls: 3
+    metrics:
+      memory_container: >
+        container_memory_usage_bytes{name="target-app"}
+        / container_spec_memory_limit_bytes{name="target-app"} * 100
+      memory_host: >
+        (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+        / node_memory_MemTotal_bytes * 100
+      restart_count: >
+        increase(container_restart_count{name="target-app"}[5m])

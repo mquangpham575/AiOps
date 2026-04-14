@@ -1,122 +1,50 @@
-# NT531 AIOps Demos - Quick Reference
+# NT531 AIOps — Quick Reference (Current)
 
-**Purpose:** Run and validate 3 AIOps demonstrations
-**Time Required:** ~15 minutes for all demos
-**Last Updated:** 2026-03-24
+This repo no longer uses the legacy `demos/*/run.sh` + `validate.sh` scripts.
+Those are archived; use the config-driven scenario runner instead.
 
----
+## Start / Stop
 
-## Prerequisites & System Startup
+- Preferred (starts Azure VMs, opens SSH tunnel for Docker, starts local control plane):
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\aiops-power.ps1 start`
+- Stop:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\aiops-power.ps1 stop`
 
-### Start All Services
-
-```bash
-cd d:/Study/3rd-y/3rdY-Sem2/NT531.Q21-DanhGiaHieuNang/DoAn
-docker compose up -d --build
-```
-
-### Verify System Health
+## Run scenarios
 
 ```bash
-# Check all 7 services are running
-docker compose ps
-
-# Quick health checks
-curl http://localhost:8080/health  # AI Agent
-curl http://localhost:5000/health  # Target App
-curl http://localhost:9090/-/healthy  # Prometheus
+python scripts/demo_runner.py --scenario all
+python scripts/demo_runner.py --scenario throughput
+python scripts/demo_runner.py --scenario cpu
+python scripts/demo_runner.py --scenario memory
 ```
 
-**Expected:** All services show status "Up"
-
----
-
-## Demo Quick Reference
-
-| Demo       | Purpose              | Run Command                             | Duration | Validation      | Success Criteria                                    |
-| ---------- | -------------------- | --------------------------------------- | -------- | --------------- | --------------------------------------------------- |
-| **Demo 1** | Baseline Performance | `cd demos/demo1-baseline && ./run.sh`   | ~5 min   | `./validate.sh` | Agent CPU <5%, Memory <150MB, Response <2s          |
-| **Demo 2** | DDoS Response        | `cd demos/demo2-ddos && ./run.sh`       | ~2 min   | `./validate.sh` | Detection <15s, Agent response <5s, Confidence >90% |
-| **Demo 3** | CPU Auto-Remediation | `cd demos/demo3-cpu-stress && ./run.sh` | ~4 min   | `./validate.sh` | CPU spike >80%, 100% process kill, Recovery <30s    |
-
-### Run All Demos Sequentially
+AI vs Rule-based comparison (run twice, swap agent URL):
 
 ```bash
-cd demos
-./run-all-demos.sh
+python scripts/demo_runner.py --scenario cpu --agent-url http://localhost:8080
+python scripts/demo_runner.py --scenario cpu --agent-url http://localhost:5001
 ```
 
-**Duration:** ~15 minutes (includes cooldown periods)
-**Output:** Combined report in `demos/combined_results/`
-
----
-
-## Service URLs & Access
-
-| Service               | URL                   | Credentials    | Health Check  |
-| --------------------- | --------------------- | -------------- | ------------- |
-| **Grafana Dashboard** | http://localhost:3000 | admin/admin123 | `/api/health` |
-| **Prometheus**        | http://localhost:9090 | -              | `/-/healthy`  |
-| **AlertManager**      | http://localhost:9093 | -              | `/-/healthy`  |
-| **Target App**        | http://localhost:5000 | -              | `/health`     |
-| **AI Agent**          | http://localhost:8080 | -              | `/health`     |
-
-### Key API Endpoints
+## Health checks (PC)
 
 ```bash
-# View agent decisions
-curl http://localhost:8080/logs?limit=10 | jq
-
-# Check active alerts
-curl http://localhost:9093/api/v2/alerts | jq
-
-# Query Prometheus metrics
-curl "http://localhost:9090/api/v1/query?query=up"
+docker compose -f docker-compose.control.yml ps
+curl http://localhost:9090/-/ready
+curl http://localhost:8080/health
+curl http://localhost:5001/health
 ```
 
----
+## Dashboards
 
-## Validation Score Guide
+- Grafana runs on the loadgen VM: `http://$AZURE_LOADGEN_IP:3000`
+- Prometheus (PC): `http://localhost:9090`
+- AlertManager (PC): `http://localhost:9093`
 
-### Score Interpretation
+## Output
 
-- **100% (X/X)** = All checks passed ✅
-- **60-99%** = Partial success, review failures ⚠️
-- **<60%** = Failed, needs investigation ❌
-
-### Validation Checks by Demo
-
-- **Demo 1:** 5/5 checks (file integrity, metrics, agent function, health)
-- **Demo 2:** 7/7 checks (attack execution, alert trigger, agent response, recovery)
-- **Demo 3:** 8/8 checks (stress creation, detection, remediation, recovery, cleanup)
-
-### Expected Output
-
-```bash
-./validate.sh
-
-# Success example:
-Validation Score: 8/8 (100%)
-✅ EXCELLENT - AUTO-REMEDIATION SUCCESSFUL!
-✓ All required sections present
-✓ Agent detected and responded to alerts
-✓ System recovered to normal state
-```
-
----
-
-## Results Files Location
-
-Each demo generates timestamped results:
-
-```
-demos/demo1-baseline/results/baseline_YYYYMMDD_HHMMSS.txt
-demos/demo2-ddos/results/ddos_YYYYMMDD_HHMMSS.txt
-demos/demo3-cpu-stress/results/cpu_stress_YYYYMMDD_HHMMSS.txt
-demos/combined_results/full_demo_report_YYYYMMDD_HHMMSS.txt
-```
-
----
+- Scenario runner exports CSV (default `results.csv`) with per-iteration rows + `summary` rows.
+- Scenario definitions are in `scenarios/config.yml`.
 
 ## Quick Troubleshooting
 
@@ -163,13 +91,7 @@ docker compose restart
 
 ### Issue: Old results cluttering
 
-```bash
-# Clean individual demo
-cd demos/demo1-baseline && ./run.sh --clean
-
-# Clean all demos
-cd demos && ./run-all-demos.sh --clean
-```
+The legacy demo scripts were removed. If you want to clean archived logs, delete files under `demos/**/results/` manually.
 
 ---
 
@@ -197,10 +119,7 @@ docker logs prometheus --tail 100
 
 ### Clean All Results
 
-```bash
-cd demos
-./run-all-demos.sh --clean
-```
+Legacy demo scripts were removed. To clean archived logs, delete files under `demos/**/results/` manually.
 
 ### Force Remove Containers
 
@@ -213,7 +132,7 @@ docker compose up -d --build  # Fresh start
 
 ## Grafana Dashboard Quick Access
 
-1. Open http://localhost:3000
+1. Open `http://$AZURE_LOADGEN_IP:3000`
 2. Login: **admin** / **admin123**
 3. Select dashboard: **"NT531 AIOps System Overview"**
 4. Set time range: **Last 30 minutes**
@@ -243,38 +162,34 @@ docker compose up -d --build  # Fresh start
 ## Command Reference Card
 
 ```bash
-# START SYSTEM
-docker compose up -d --build
+# START SYSTEM (preferred)
+powershell -ExecutionPolicy Bypass -File .\scripts\aiops-power.ps1 start
 
-# RUN ALL DEMOS
-cd demos && ./run-all-demos.sh
-
-# RUN INDIVIDUAL DEMO
-cd demos/demo1-baseline && ./run.sh && ./validate.sh
-cd demos/demo2-ddos && ./run.sh && ./validate.sh
-cd demos/demo3-cpu-stress && ./run.sh && ./validate.sh
+# RUN SCENARIOS
+python scripts/demo_runner.py --scenario all
+python scripts/demo_runner.py --scenario throughput
+python scripts/demo_runner.py --scenario cpu
+python scripts/demo_runner.py --scenario memory
 
 # HEALTH CHECKS
 curl http://localhost:8080/health | jq  # Agent
 curl http://localhost:8080/logs | jq   # Decisions
-docker compose ps                        # All services
+docker compose -f docker-compose.control.yml ps
 
 # MONITORING
-open http://localhost:3000               # Grafana
-open http://localhost:9090               # Prometheus
-open http://localhost:9093               # AlertManager
+http://$AZURE_LOADGEN_IP:3000            # Grafana (loadgen VM)
+http://localhost:9090                    # Prometheus (PC)
+http://localhost:9093                    # AlertManager (PC)
 
 # CLEANUP
 docker exec target-app pkill -9 stress-ng  # Kill stress
 docker compose restart                      # Restart all
-./run.sh --clean                            # Clean results
 ```
 
 ---
 
-**Need more details?** See individual demo READMEs:
+**Need more details?** Use the current docs:
 
-- `demos/demo1-baseline/README.md`
-- `demos/demo2-ddos/README.md`
-- `demos/demo3-cpu-stress/README.md`
-- `demos/README.md` (overview)
+- `DEMO_GUIDE.md`
+- `scenarios/README.md`
+- `demos/README.md` (archived results overview)

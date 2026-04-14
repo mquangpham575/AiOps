@@ -1,34 +1,22 @@
-# 🎮 AIOps Demos - Interactive Testing & Validation
+# 🎮 AIOps Demos (Archived)
 
-Welcome to the NT531 AIOps demonstration suite! This folder contains **4 comprehensive demos** that showcase the system's intelligent monitoring, detection, and auto-remediation capabilities.
+Thư mục `demos/` hiện chỉ giữ **log kết quả chạy cũ** (March 30–31) để làm bằng chứng/đối chiếu báo cáo.
 
-## 📁 Demo Structure
+Các script legacy `run.sh`, `validate.sh`, `run-all-demos.sh` đã được xoá và được thay thế bởi hệ thống mới:
 
+- `scenarios/config.yml` (định nghĩa kịch bản)
+- `scripts/demo_runner.py` (runner chạy kịch bản + xuất CSV)
+
+Nếu cần chạy lại demo:
+
+```bash
+python scripts/demo_runner.py --scenario all
 ```
-demos/
-├── README.md                    ← You are here
-├── run-all-demos.sh            ← Run all 4 demos sequentially
-├── demo1-baseline/             ← Measures AI agent overhead
-│   ├── run.sh                  ← Execute baseline test
-│   ├── validate.sh             ← Validate results
-│   ├── README.md               ← Detailed documentation
-│   └── results/                ← Generated results files
-├── demo2-ddos/                 ← DDoS attack response
-│   ├── run.sh                  ← Execute DDoS simulation
-│   ├── validate.sh             ← Validate attack detection
-│   ├── README.md               ← Detailed documentation
-│   └── results/                ← Attack logs & results
-├── demo3-cpu-stress/           ← Auto-remediation of CPU stress
-│   ├── run.sh                  ← Execute CPU stress test
-│   ├── validate.sh             ← Validate auto-kill success
-│   ├── README.md               ← Detailed documentation
-│   └── results/                ← Process & CPU logs
-└── demo4-memory/               ← Auto-remediation of memory exhaustion
-    ├── run.sh                  ← Execute memory stress test
-    ├── validate.sh             ← Validate service recovery
-    ├── README.md               ← Detailed documentation
-    └── results/                ← Memory & recovery logs
-```
+
+Tài liệu hướng dẫn mới:
+
+- `scenarios/README.md`
+- `DEMO_GUIDE.md`
 
 ---
 
@@ -54,7 +42,7 @@ demos/
 
 **Duration**: ~5 minutes
 
-**Read more**: [demo1-baseline/README.md](demo1-baseline/README.md)
+Note: The per-demo folders under `demos/` are archived and may contain legacy instructions.
 
 ---
 
@@ -78,8 +66,6 @@ demos/
 
 **Duration**: ~2 minutes
 
-**Read more**: [demo2-ddos/README.md](demo2-ddos/README.md)
-
 ---
 
 ### Demo 3: CPU Stress Auto-Remediation
@@ -102,8 +88,6 @@ demos/
 - CPU recovery: **<30 seconds**
 
 **Duration**: ~4 minutes
-
-**Read more**: [demo3-cpu-stress/README.md](demo3-cpu-stress/README.md)
 
 ---
 
@@ -132,57 +116,19 @@ demos/
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Quick Start (Current)
 
-### Prerequisites
-
-Ensure the AIOps system is running:
+Use the current config-driven runner (not the archived `demos/*/run.sh` scripts):
 
 ```bash
-# From project root
-docker compose up -d --build
+# Start/stop infra + tunnel (preferred)
+powershell -ExecutionPolicy Bypass -File .\scripts\aiops-power.ps1 start
 
-# Verify all services are running
-docker compose ps
-
-# Expected: 7 services running (target-app, prometheus, grafana, alertmanager, agent, etc.)
+# Run scenarios (exports results.csv)
+python scripts/demo_runner.py --scenario all
 ```
 
-### Run Individual Demo
-
-```bash
-# Navigate to demo folder
-cd demos/demo1-baseline
-
-# Make scripts executable
-chmod +x run.sh validate.sh
-
-# Run the demo
-./run.sh
-
-# Validate results (after demo completes)
-./validate.sh
-```
-
-### Run All Demos Sequentially
-
-```bash
-# From demos folder
-chmod +x run-all-demos.sh
-./run-all-demos.sh
-
-# This will:
-# 1. Run Demo 1 (Baseline)
-# 2. Wait 30s
-# 3. Run Demo 2 (DDoS)
-# 4. Wait 30s
-# 5. Run Demo 3 (CPU Stress)
-# 6. Wait 30s
-# 7. Run Demo 4 (Memory)
-# 8. Generate combined report
-```
-
-**Note**: Running all demos sequentially takes approximately **20-25 minutes**. For faster evaluation, run individual demos from their respective folders.
+See the up-to-date instructions in `DEMO_GUIDE.md` and `scenarios/README.md`.
 
 ---
 
@@ -211,20 +157,13 @@ Every results file contains:
 
 ### Validation Output
 
-```bash
-./validate.sh results/demo_timestamp.txt
-
-# Output example:
-═══ Validation Summary ═══
-Validation Score: 8/8 (100%)
-
-✅ ALL VALIDATIONS PASSED!
-
+The archived demos used `validate.sh` to score legacy logs. The current workflow exports CSV from `scripts/demo_runner.py`.
 ✓ Demo executed completely
 ✓ AI Agent responded correctly
 ✓ System recovered successfully
 ✓ All metrics within acceptable ranges
-```
+
+````
 
 ---
 
@@ -239,7 +178,7 @@ http://localhost:3000
 # Login
 Username: admin
 Password: admin123
-```
+````
 
 ### Recommended Dashboards
 
@@ -264,16 +203,16 @@ Password: admin123
 
 ## 🔍 Demo Comparison Matrix
 
-| Feature                | Demo 1       | Demo 2            | Demo 3           | Demo 4            |
-| ---------------------- | ------------ | ----------------- | ---------------- | ----------------- |
-| **AI Decision Making** | Basic        | Advanced          | Expert           | Expert            |
-| **Auto-Remediation**   | ❌ Manual    | ⚠️ Recommendation | ✅ Automatic     | ✅ Automatic      |
-| **Process Management** | ❌ None      | ❌ None           | ✅ Full          | ⚠️ Service Mgmt   |
-| **Attack Simulation**  | ❌ None      | ✅ DDoS           | ✅ CPU Stress    | ✅ Memory Stress  |
-| **System Impact**      | Low          | Medium            | High             | High              |
-| **Complexity**         | Simple       | Medium            | Complex          | Complex           |
-| **Duration**           | ~5 min       | ~2 min            | ~4 min           | ~5 min            |
-| **Success Metric**     | Overhead <5% | Detection <15s    | Termination 100% | Recovery <30s     |
+| Feature                | Demo 1       | Demo 2            | Demo 3           | Demo 4           |
+| ---------------------- | ------------ | ----------------- | ---------------- | ---------------- |
+| **AI Decision Making** | Basic        | Advanced          | Expert           | Expert           |
+| **Auto-Remediation**   | ❌ Manual    | ⚠️ Recommendation | ✅ Automatic     | ✅ Automatic     |
+| **Process Management** | ❌ None      | ❌ None           | ✅ Full          | ⚠️ Service Mgmt  |
+| **Attack Simulation**  | ❌ None      | ✅ DDoS           | ✅ CPU Stress    | ✅ Memory Stress |
+| **System Impact**      | Low          | Medium            | High             | High             |
+| **Complexity**         | Simple       | Medium            | Complex          | Complex          |
+| **Duration**           | ~5 min       | ~2 min            | ~4 min           | ~5 min           |
+| **Success Metric**     | Overhead <5% | Detection <15s    | Termination 100% | Recovery <30s    |
 
 ---
 
@@ -516,14 +455,14 @@ By completing these demos, you've successfully:
 
 **Need help?**
 
-- Check individual demo READMEs for detailed explanations
+- See `DEMO_GUIDE.md` and `scenarios/README.md` for the current workflow
 - Review troubleshooting sections above
 - Examine agent logs: `curl http://localhost:8080/logs | jq`
-- Monitor Grafana dashboards: `http://localhost:3000`
+- Monitor Grafana dashboards: `http://<AZURE_LOADGEN_IP>:3000`
 
 **Ready to present?**
 
-- Run `./run-all-demos.sh` for comprehensive testing
+- Run `python scripts/demo_runner.py --scenario all` for a comprehensive run
 - Export Grafana dashboards for visuals
 - Save result files for evidence
 - Take screenshots of key metrics

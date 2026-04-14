@@ -1,5 +1,7 @@
 # Demo 3: CPU Stress Auto-Remediation
 
+> Archived: the legacy `demos/*/run.sh` + `validate.sh` scripts were removed. Use `python scripts/demo_runner.py --scenario cpu` (and see `DEMO_GUIDE.md` / `scenarios/README.md`).
+
 ## 🎯 Objective
 
 Demonstrate the AI agent's ability to **automatically identify** and **kill problematic processes** causing high CPU usage. This showcases intelligent process matching, multi-step workflows, and autonomous remediation.
@@ -41,17 +43,14 @@ stress-ng → High CPU → Prometheus → AlertManager → AI Agent → Process 
 
 ## 🚀 Running the Demo
 
+This demo is now driven by the scenario runner.
+
 ```bash
-cd demos/demo3-cpu-stress
+# Runs the CPU remediation scenario and exports results.
+python scripts/demo_runner.py --scenario cpu
 
-# Make scripts executable
-chmod +x run.sh validate.sh
-
-# Run the demo
-./run.sh
-
-# Validate auto-remediation
-./validate.sh
+# Optional: export to a specific file
+python scripts/demo_runner.py --scenario cpu --export results.csv
 ```
 
 ### What You'll See
@@ -126,7 +125,7 @@ CPU returned to baseline - full recovery achieved
 
 ## ✅ Validation Checks
 
-The validation script verifies:
+Use the runner output (stdout + CSV) as the validation artifact. It covers:
 
 1. ✅ CPU stress was initiated (stress-ng running)
 2. ✅ CPU usage spiked (>80%)
@@ -139,20 +138,7 @@ The validation script verifies:
 
 ### Validation Score
 
-```bash
-./validate.sh
-
-# Expected output:
-Validation Score: 8/8 (100%)
-
-✅ EXCELLENT - AUTO-REMEDIATION SUCCESSFUL!
-
-✓ CPU stress was successfully created
-✓ AI Agent detected the alert
-✓ Agent automatically terminated stress processes
-✓ System recovered to normal state
-✓ No stress processes remain
-```
+The summary row (`iteration=summary`) contains mean±stdev for MTTR breakdown.
 
 ## 🧠 Enhanced Intelligence Features
 
@@ -185,7 +171,7 @@ The agent recognizes various process name patterns:
 
 ## 📈 Viewing in Grafana
 
-1. Open: `http://localhost:3000` (admin/admin123)
+1. Open Grafana (loadgen VM): `http://<AZURE_LOADGEN_IP>:3000`
 2. Dashboard: **NT531 AIOps System Overview**
 3. Time range: Last 15 minutes
 4. Key panels:

@@ -265,7 +265,7 @@
       },
       "targets": [
         {
-          "expr": "rate(flask_http_requests_total{job=\"target-app\"}[1m])",
+          "expr": "rate(flask_http_request_total{job=\"target-app\"}[1m]) or rate(flask_http_requests_total{job=\"target-app\"}[1m])",
           "interval": "",
           "legendFormat": "Request Rate (req/s)",
           "refId": "A"
@@ -322,15 +322,15 @@
               },
               {
                 "color": "yellow",
-                "value": 1
+                "value": 200
               },
               {
                 "color": "red",
-                "value": 2
+                "value": 1500
               }
             ]
           },
-          "unit": "s"
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -353,13 +353,25 @@
       },
       "targets": [
         {
-          "expr": "rate(flask_http_request_duration_seconds_sum{job=\"target-app\"}[1m]) / rate(flask_http_request_duration_seconds_count{job=\"target-app\"}[1m])",
+          "expr": "histogram_quantile(0.50, rate(flask_http_request_duration_seconds_bucket{job=\"target-app\"}[1m])) * 1000",
           "interval": "",
-          "legendFormat": "Average Latency (s)",
+          "legendFormat": "p50 (ms)",
           "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket{job=\"target-app\"}[1m])) * 1000",
+          "interval": "",
+          "legendFormat": "p95 (ms)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(flask_http_request_duration_seconds_bucket{job=\"target-app\"}[1m])) * 1000",
+          "interval": "",
+          "legendFormat": "p99 (ms)",
+          "refId": "C"
         }
       ],
-      "title": "Scenario 2: Request Latency",
+      "title": "Scenario 2: Request Latency (p50/p95/p99)",
       "type": "timeseries"
     },
     {

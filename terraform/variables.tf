@@ -26,6 +26,12 @@ variable "vm_size" {
   default     = "Standard_B2ps_v2"
 }
 
+variable "loadgen_vm_size" {
+  description = "Azure VM SKU for load generator/observability node"
+  type        = string
+  default     = "Standard_B2s"
+}
+
 variable "ssh_public_key_path" {
   description = "Absolute path to the SSH public key file (.pub)"
   type        = string
@@ -33,7 +39,7 @@ variable "ssh_public_key_path" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR block allowed to reach port 22 and 2375."
+  description = "CIDR block allowed to reach port 22 (SSH + Docker tunnel)."
   type        = string
   default     = "14.187.86.16/32"
 }

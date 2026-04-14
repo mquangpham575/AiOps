@@ -1,5 +1,7 @@
 # Demo 4: Memory Exhaustion Auto-Remediation
 
+> Archived: the legacy `demos/*/run.sh` + `validate.sh` scripts were removed. Use `python scripts/demo_runner.py --scenario memory` (and see `DEMO_GUIDE.md` / `scenarios/README.md`).
+
 ## 🎯 Objective
 
 Demonstrate the AI agent's ability to **automatically detect** and **respond** to memory exhaustion scenarios by analyzing memory pressure and taking intelligent remediation actions such as service restart or resource cleanup.
@@ -40,17 +42,14 @@ Memory Requests → High Memory → Prometheus → AlertManager → AI Agent →
 
 ## 🚀 Running the Demo
 
+This demo is now driven by the scenario runner.
+
 ```bash
-cd demos/demo4-memory
+# Runs the Memory remediation scenario and exports results.
+python scripts/demo_runner.py --scenario memory
 
-# Make scripts executable
-chmod +x run.sh validate.sh
-
-# Run the demo
-./run.sh
-
-# Validate auto-remediation
-./validate.sh
+# Optional: export to a specific file
+python scripts/demo_runner.py --scenario memory --export results.csv
 ```
 
 ### What You'll See
@@ -130,7 +129,7 @@ Memory returned to baseline - full recovery achieved
 
 ## ✅ Validation Checks
 
-The validation script verifies:
+Use the runner output (stdout + CSV) as the validation artifact. It covers:
 
 1. ✅ Memory stress was initiated (high memory requests)
 2. ✅ Memory usage increased significantly (>80%)
@@ -143,20 +142,7 @@ The validation script verifies:
 
 ### Validation Score
 
-```bash
-./validate.sh
-
-# Expected output:
-Validation Score: 8/8 (100%)
-
-✅ EXCELLENT - AUTO-REMEDIATION SUCCESSFUL!
-
-✓ Memory stress was successfully created
-✓ AI Agent detected the alert
-✓ Agent automatically restarted the service
-✓ System recovered to normal state
-✓ Service remains healthy
-```
+The summary row (`iteration=summary`) contains mean±stdev for MTTR breakdown.
 
 ## 🧠 Enhanced Intelligence Features
 
@@ -189,7 +175,7 @@ The agent recognizes memory exhaustion patterns:
 
 ## 📈 Viewing in Grafana
 
-1. Open: `http://localhost:3000` (admin/admin123)
+1. Open Grafana (loadgen VM): `http://<AZURE_LOADGEN_IP>:3000`
 2. Dashboard: **NT531 AIOps System Overview**
 3. Time range: Last 15 minutes
 4. Key panels:
@@ -201,12 +187,12 @@ The agent recognizes memory exhaustion patterns:
 
 ## 🔍 Key Metrics Comparison
 
-| Phase           | Mem %   | Avail | Requests | Status       |
-| --------------- | ------- | ----- | -------- | ------------ |
-| **Baseline**    | 35%     | 1.3GB | 0        | ✅ Normal    |
-| **Attack**      | 87%     | 260MB | 20/sec   | 🔥 Critical  |
-| **Remediation** | 65%     | 700MB | 0        | ⚙️ Resolving |
-| **Recovery**    | 37%     | 1.3GB | 0        | ✅ Resolved  |
+| Phase           | Mem % | Avail | Requests | Status       |
+| --------------- | ----- | ----- | -------- | ------------ |
+| **Baseline**    | 35%   | 1.3GB | 0        | ✅ Normal    |
+| **Attack**      | 87%   | 260MB | 20/sec   | 🔥 Critical  |
+| **Remediation** | 65%   | 700MB | 0        | ⚙️ Resolving |
+| **Recovery**    | 37%   | 1.3GB | 0        | ✅ Resolved  |
 
 ## 💡 Learning Objectives
 

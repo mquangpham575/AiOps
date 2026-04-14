@@ -443,7 +443,6 @@ TOOLS = {
     "check_system_load":    check_system_load,
     "reduce_system_load":   reduce_system_load,
     "auto_kill_cpu_stress": auto_kill_cpu_stress,
-    "get_prometheus_metrics": get_prometheus_metrics,
     # post_grafana_annotation — called automatically by webhook(), not by LLM
     # validate_container_exists — internal guard, not AI-callable
 }
@@ -466,9 +465,6 @@ Available tools grouped by scenario (use ONLY the tools listed for the active sc
 [scenario=system_load] High system load average:
 - reduce_system_load(): Reduce system load — restarts containers and clears state (NO parameters)
 - check_system_load(): Read current load metrics (NO parameters)
-
-[diagnostic] Query Prometheus for additional context before acting (any scenario):
-- get_prometheus_metrics(query): Run a raw PromQL query and return current value — use to confirm severity or check related metrics
 
 NOTE: post_grafana_annotation is called automatically — do NOT include it in your action response.
 CRITICAL: reduce_system_load() and check_system_load() take NO parameters — params must be {{}}.

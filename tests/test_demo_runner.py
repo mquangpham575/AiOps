@@ -26,7 +26,12 @@ def _make_alerts_response(alertname: str, active_at: str, state: str = "firing")
 @pytest.fixture
 def runner():
     import demo_runner
+    config = {
+        "defaults": {"iterations": 1, "duration": 10, "cooldown": 0, "cooldown_between": 0},
+        "scenarios": {},
+    }
     return demo_runner.DemoRunner(
+        config=config,
         target_url="http://localhost:5000",
         agent_url="http://localhost:8080",
         prometheus_url="http://localhost:9090",
@@ -204,38 +209,33 @@ def test_wait_for_recovery_timeout(runner):
 # ── export_csv ────────────────────────────────────────────────────────────
 
 def test_export_csv(runner, tmp_path):
-    """export_csv writes 4-point MTTR fields and derived latency columns to CSV."""
+    """export_csv writes the unified CSV schema used by the new runner."""
     runner.export_file = str(tmp_path / "results.csv")
     runner.results = [{
-        "scenario":             "ddos",
-        "t0_attack_start":      "14:28:00",
-        "alert_fired_at":       "14:28:14",
-        "agent_acted_at":       "2026-04-02T14:28:17+00:00",
-        "recovered_at":         "14:28:55",
-        "detection_latency_s":  14.0,
-        "response_latency_s":   3.0,
-        "remediation_s":        38.0,
-        "mttr_s":               55.0,
-        "action":               "restart_service",
-        "confidence":           0.91,
-        "llm_latency_s":        2.3,
-        "baseline_cpu_pct":     12.0,
-        "peak_cpu_pct":         35.0,
-        "peak_req_per_sec":     487.3,
-        "baseline_mem_pct":     45.0,
-        "peak_mem_pct":         62.0,
+        "scenario": "throughput",
+        "iteration": 1,
+        "phase": "baseline",
+        "latency_p50_ms": 12.3,
+        "latency_p95_ms": 45.1,
+        "latency_p99_ms": 120.5,
+        "throughput_rps": 150.2,
+        "error_rate_pct": 0.1,
+        "cpu_pct": 15.3,
+        "memory_pct": 42.1,
+        "agent_cpu_pct": 1.2,
+        "agent_memory_mb": 180.0,
     }]
     runner.export_csv()
 
     content = open(runner.export_file).read()
-    # New columns present
-    assert "t0_attack_start"      in content
-    assert "detection_latency_s"  in content
-    assert "response_latency_s"   in content
-    assert "remediation_s"        in content
-    assert "peak_req_per_sec"     in content
+    # Header contains unified fields
+    assert "scenario" in content
+    assert "iteration" in content
+    assert "phase" in content
+    assert "latency_p50_ms" in content
+    assert "throughput_rps" in content
     # Values written correctly
-    assert "55.0" in content       # mttr_s
-    assert "14.0" in content       # detection_latency_s
-    assert "restart_service"     in content
+    assert "throughput" in content
+    assert "baseline" in content
+    assert "150.2" in content
 

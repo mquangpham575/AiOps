@@ -44,13 +44,13 @@ The current deployment runs all 7 Docker services on a single Windows PC connect
 │  [Prometheus:9090]  ←── scrapes Azure VM remotely (public IP)           │
 │  [AlertManager:9093] ──► fans out to BOTH agents simultaneously         │
 │  [Grafana:3000]     ←── Prometheus (MTTR dashboard)                     │
-│  [AI Agent:8080]    ──► Docker TCP → Azure VM (DOCKER_HOST env var)     │
-│  [Rule-Based Agent:5001] ──► Docker TCP → Azure VM (same mechanism)     │
+│  [AI Agent:8080]    ──► SSH tunnel → Azure VM Docker socket             │
+│  [Rule-Based Agent:5001] ──► SSH tunnel → Azure VM (same mechanism)     │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
          ↕  Public Internet
          ↕  Prometheus scrapes :80 :8080 :9100
-         ↕  Agents control Docker → :2375
+         ↕  Agents control Docker via SSH tunnel (:22)
          ↕  Load test traffic → :80
 ┌─── Azure VM B2s — Application Plane ───────────────────────────────────┐
 │                                                                          │
@@ -68,7 +68,7 @@ The current deployment runs all 7 Docker services on a single Windows PC connect
 | Prometheus → node-exporter | PC → Azure | HTTP pull | 9100 |
 | Prometheus → cadvisor | PC → Azure | HTTP pull | 8080 |
 | Prometheus → target-app | PC → Azure | HTTP pull | 80 |
-| Agent → Docker daemon | PC → Azure | TCP | 2375 |
+| Agent → Docker daemon | PC → Azure | SSH tunnel | 22 |
 | AlertManager → AI Agent | PC → PC | HTTP | 8080 |
 | AlertManager → Rule-Based Agent | PC → PC | HTTP | 5001 |
 | Locust load test → target-app | Any → Azure | HTTP | 80 |
@@ -77,11 +77,15 @@ The current deployment runs all 7 Docker services on a single Windows PC connect
 
 ## 3. Critical Design Decisions
 
-### 3.1 Remote Docker Control via `DOCKER_HOST`
+### 3.1 Remote Docker Control via SSH Tunnel
 
-The AI agent uses `docker.from_env()` (Docker Python SDK), which automatically reads the `DOCKER_HOST` environment variable. Passing `DOCKER_HOST=tcp://<AZURE_VM_IP>:2375` in the agent's compose configuration is the **only required change** — all Docker SDK calls (`container.restart()`, `container.top()`, `container.exec_run()`) transparently target the Azure VM. No Docker socket mount needed on PC.
+The AI agent uses `docker.from_env()` (Docker Python SDK), which automatically reads the `DOCKER_HOST` environment variable. An SSH tunnel forwards `localhost:2375` to the remote Docker Unix socket:
 
-NSG rules for port 2375 (as well as 9100 and 8080) will be configured to allow `Any` source for the sake of simplicity in a school project environment.
+```bash
+ssh -N -L 2375:/var/run/docker.sock azureuser@<AZURE_VM_IP>
+```
+
+Agents use `DOCKER_HOST=tcp://host.docker.internal:2375` — all Docker SDK calls (`container.restart()`, `container.top()`, `container.exec_run()`) transparently target the Azure VM through the tunnel. No Docker TCP port is exposed on the VM; access requires a valid SSH key.
 
 ### 3.2 Removing Obsolete Tools
 
@@ -156,25 +160,14 @@ with a `agent_type="ai"` or `agent_type="rule"` label so one dashboard query cov
 ### Phase 1 — Azure VM Provisioning
 1. Create VM: Ubuntu 22.04 LTS, size B2s (2 vCPU, 4GB RAM), generate SSH key pair
 2. Install Docker Engine via official apt repository; add user to `docker` group
-3. Enable Docker TCP API — edit `/etc/docker/daemon.json`:
-   ```json
-   { "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"] }
-   ```
-   Reload systemd, restart Docker daemon.
-
-   **Persist across reboots** — create a systemd drop-in so the TCP flag survives VM reboots:
+3. Docker daemon listens on Unix socket only (default) — no TCP exposure needed.
+   Remote access is via SSH tunnel:
    ```bash
-   sudo mkdir -p /etc/systemd/system/docker.service.d
-   sudo tee /etc/systemd/system/docker.service.d/override.conf <<EOF
-   [Service]
-   ExecStart=
-   ExecStart=/usr/bin/dockerd
-   EOF
-   sudo systemctl daemon-reload && sudo systemctl restart docker
+   ssh -N -L 2375:/var/run/docker.sock azureuser@<AZURE_VM_IP>
    ```
-   (The `daemon.json` already carries the `hosts` setting; the override just strips the conflicting CLI flag Docker adds by default.)
+   The `aiops-power.ps1` script manages tunnel lifecycle automatically.
 4. Configure NSG (see Section 7 for full port table)
-5. **Gate:** `docker -H tcp://<AZURE_IP>:2375 ps` from PC returns empty list
+5. **Gate:** SSH tunnel active + `docker ps` via tunnel returns empty list
 
 ### Phase 2 — Application Plane (Azure VM)
 1. Create `docker-compose.app.yml` (target-app + node-exporter + cadvisor)
@@ -204,7 +197,7 @@ with a `agent_type="ai"` or `agent_type="rule"` label so one dashboard query cov
 ### Phase 6 — Integration Validation
 1. Trigger `ContainerHighCPU` scenario on Azure VM
 2. Confirm AlertManager fires → both agents receive alert within 10s
-3. Confirm AI agent calls `restart_service` → `docker -H tcp://<AZURE_IP>:2375 logs target-app` shows restart
+3. Confirm AI agent calls `restart_service` → `ssh azureuser@<AZURE_IP> 'docker logs target-app'` shows restart
 4. Confirm rule-based agent does same independently
 5. Check MTTR overlay panel: rule-based ~0.1–0.3s, AI agent ~3–8s — visible separation
 
@@ -285,11 +278,10 @@ The rule-based agent checks `is_on_cooldown(f"{alertname}:{container}")` before 
 
 | Port | Protocol | Service | Source |
 |---|---|---|---|
-| 22 | TCP | SSH | PC public IP only |
+| 22 | TCP | SSH + Docker tunnel | Admin IP only |
 | 80 | TCP | Nginx / target-app traffic | Any (load test) |
-| 2375 | TCP | Docker TCP API | Any |
-| 8080 | TCP | cAdvisor scrape | Any |
-| 9100 | TCP | node-exporter scrape | Any |
+| 8080 | TCP | cAdvisor scrape | Admin IP only |
+| 9100 | TCP | node-exporter scrape | Admin IP only |
 
 **Port 5000 is NOT exposed.** All target-app traffic routes through nginx on port 80 only.
 

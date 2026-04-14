@@ -185,6 +185,10 @@ $RECYCLE.BIN/
 .nfs*
 
 # ── Project Specific Files ───────────────────────────────────
+# Terraform
+.terraform/
+*.tfstate.lock.info
+
 # Test outputs
 test_results/
 validation_output.txt

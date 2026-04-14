@@ -1,5 +1,7 @@
 # Demo 1: Baseline Performance Assessment
 
+> Archived: the legacy `demos/*/run.sh` + `validate.sh` scripts were removed. Use `python scripts/demo_runner.py --scenario throughput` (and see `DEMO_GUIDE.md` / `scenarios/README.md`).
+
 ## 🎯 Objective
 
 Measure the **overhead** introduced by the AI-powered AIOps agent on system resources. This demo compares system performance **with** and **without** the AI agent to quantify the cost of intelligent automation.
@@ -51,55 +53,19 @@ graph TD
 
 ## 🚀 Running the Demo
 
-### Prerequisites
+This demo has been folded into the scenario runner.
+
+### Run via scenario runner
 
 ```bash
-# Ensure system is running
-docker compose ps
+# Runs the "throughput" scenario which includes a baseline phase.
+python scripts/demo_runner.py --scenario throughput
 
-# All services should show "running":
-# - target-app
-# - prometheus
-# - grafana
-# - alertmanager
-# - agent
+# Optional: export to a specific file
+python scripts/demo_runner.py --scenario throughput --export results.csv
 ```
 
-### Execute Demo
-
-```bash
-cd demos/demo1-baseline
-
-# Give execute permission
-chmod +x run.sh
-
-# Run the demo
-./run.sh
-```
-
-### What Happens:
-
-1. **Prerequisites Check** (10s)
-   - Validates all services are running
-   - Checks connectivity to APIs
-
-2. **Phase 1: Baseline WITHOUT Agent** (2 minutes)
-   - Stops the AI agent container
-   - Records target app CPU, memory, network
-   - Generates light background load
-   - Saves baseline metrics
-
-3. **Phase 2: WITH Agent** (2 minutes)
-   - Starts the AI agent
-   - Records SAME metrics WITH agent active
-   - Sends test alert to agent
-   - Captures agent response time
-   - Saves comparative metrics
-
-4. **Results Generation**
-   - Creates timestamped results file
-   - Shows metric comparison
-   - Displays agent decision logs
+The baseline phase metrics (and agent overhead, if enabled) are captured in the CSV output.
 
 ## 📊 Understanding the Results
 
@@ -152,36 +118,8 @@ Decision: "Acknowledged baseline test alert"
 
 ## ✅ Validating Results
 
-### Run Validation Script
-
-```bash
-# Auto-detect latest results
-./validate.sh
-
-# Or specify results file
-./validate.sh results/baseline_20260324_143022.txt
-```
-
-### What Validation Checks:
-
-1. ✅ **File Integrity**: All required sections present
-2. ✅ **Metrics Comparison**: Both baseline and with-agent data
-3. ✅ **Agent Functionality**: Test alert was processed
-4. ✅ **Performance Thresholds**: Within acceptable limits
-5. ✅ **Live System Health**: Current system status
-
-### Validation Output
-
-```bash
-=== Validation Summary ===
-Validation Score: 5/5 (100%)
-
-✅ ALL VALIDATIONS PASSED!
-
-✓ Demo 1 results are valid and complete
-✓ AI Agent overhead is within acceptable limits
-✓ System performance meets requirements
-```
+Use the CSV output produced by `scripts/demo_runner.py` as the source of truth.
+For deeper details (Grafana dashboards, scenario definitions), see `DEMO_GUIDE.md` and `scenarios/README.md`.
 
 ## 📈 Visualizing in Grafana
 

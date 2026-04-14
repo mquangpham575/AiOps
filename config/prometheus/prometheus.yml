@@ -38,10 +38,27 @@ scrape_configs:
       - targets: ["104.215.158.157:80"]
     metrics_path: /metrics
 
-  - job_name: "node-exporter-azure"
+  - job_name: "node-exporter-app"
     static_configs:
       - targets: ["104.215.158.157:9100"]
 
-  - job_name: "cadvisor-azure"
+  - job_name: "cadvisor-app"
     static_configs:
       - targets: ["104.215.158.157:8080"]
+
+  - job_name: "node-exporter-loadgen"
+    static_configs:
+      - targets: ["104.215.191.69:9100"]
+
+  # ── Federation (Aggregate metrics from Loadgen Prometheus) ──
+  - job_name: 'federate'
+    scrape_interval: 15s
+    honor_labels: true
+    metrics_path: '/federate'
+    params:
+      'match[]':
+        - '{job="otel-collector"}'
+        - '{job="loadgen-node"}'
+        - '{__name__=~"k6_.*"}'
+    static_configs:
+      - targets: ["104.215.191.69:9090"]

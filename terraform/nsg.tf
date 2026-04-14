@@ -1,13 +1,13 @@
 # =============================================================================
-# nsg.tf — Network Security Group rules for AiOps Application Plane
+# nsg.tf — Network Security Group for AiOps Application Plane (per-NIC)
 # =============================================================================
 
-resource "azurerm_network_security_group" "main" {
-  name                = "${var.project_name}-nsg"
+resource "azurerm_network_security_group" "app" {
+  name                = "${var.project_name}-app-nsg"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 
-  # ---- SSH (port 22) ----
+  # ---- SSH (port 22) — also carries Docker tunnel ----
   security_rule {
     name                       = "allow-ssh"
     priority                   = 100
@@ -30,19 +30,6 @@ resource "azurerm_network_security_group" "main" {
     source_port_range          = "*"
     destination_port_range     = "80"
     source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  # ---- Docker TCP API (port 2375) ----
-  security_rule {
-    name                       = "allow-docker-tcp"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "2375"
-    source_address_prefix      = var.allowed_ssh_cidr
     destination_address_prefix = "*"
   }
 
@@ -78,9 +65,9 @@ resource "azurerm_network_security_group" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# Associate the NSG with the subnet
+# Associate the NSG with the app VM NIC (not the subnet)
 # ---------------------------------------------------------------------------
-resource "azurerm_subnet_network_security_group_association" "main" {
-  subnet_id                 = azurerm_subnet.main.id
-  network_security_group_id = azurerm_network_security_group.main.id
+resource "azurerm_network_interface_security_group_association" "app" {
+  network_interface_id      = azurerm_network_interface.app.id
+  network_security_group_id = azurerm_network_security_group.app.id
 }

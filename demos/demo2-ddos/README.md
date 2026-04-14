@@ -1,5 +1,7 @@
 # Demo 2: DDoS Attack Response
 
+> Archived: the legacy `demos/*/run.sh` + `validate.sh` scripts were removed. Use `python scripts/demo_runner.py --scenario throughput` (and see `DEMO_GUIDE.md` / `scenarios/README.md`).
+
 ## 🎯 Objective
 
 Demonstrate the AI agent's ability to **detect** and **respond** to DDoS (Distributed Denial of Service) attacks through intelligent analysis and automated mitigation recommendations.
@@ -32,17 +34,14 @@ Attack Script → Target App → Prometheus → AlertManager → AI Agent → De
 
 ## 🚀 Running the Demo
 
+This demo is now the **DDoS phase** inside the scenario runner.
+
 ```bash
-cd demos/demo2-ddos
+# Runs baseline + DDoS phases and exports results.
+python scripts/demo_runner.py --scenario throughput
 
-# Make executable
-chmod +x run.sh validate.sh
-
-# Run demo
-./run.sh
-
-# Validate results
-./validate.sh
+# Optional: export to a specific file
+python scripts/demo_runner.py --scenario throughput --export results.csv
 ```
 
 ### What You'll See
@@ -92,19 +91,11 @@ Error Rate: 8% (acceptable under attack)
 
 ##✅ Validation Checks
 
-The validation script verifies:
-
-1. ✅ Attack was executed (pre/during/post metrics)
-2. ✅ AlertManager triggered HighRequestRate alert
-3. ✅ AI Agent detected and processed alert
-4. ✅ Agent recommended appropriate mitigation
-5. ✅ System recovered after attack
-6. ✅ Error rate within acceptable limits (<10%)
-7. ✅ Services remain healthy post-attack
+Use the CSV rows produced by `scripts/demo_runner.py` (phase `ddos`) as the validation artifact.
 
 ## 📈 Viewing in Grafana
 
-1. Open: `http://localhost:3000` (admin/admin123)
+1. Open Grafana (loadgen VM): `http://<AZURE_LOADGEN_IP>:3000`
 2. Dashboard: **NT531 AIOps System Overview**
 3. Time range: Last 15 minutes
 4. Look for:

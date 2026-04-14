@@ -42,7 +42,7 @@ Tài liệu hướng dẫn mới:
 
 **Duration**: ~5 minutes
 
-Note: The per-demo folders under `demos/` are archived and may contain legacy instructions.
+Note: The per-demo folders under `demos/` are archived (kept for old result logs only).
 
 ---
 
@@ -158,12 +158,11 @@ Every results file contains:
 ### Validation Output
 
 The archived demos used `validate.sh` to score legacy logs. The current workflow exports CSV from `scripts/demo_runner.py`.
-✓ Demo executed completely
-✓ AI Agent responded correctly
-✓ System recovered successfully
-✓ All metrics within acceptable ranges
 
-````
+- ✓ Demo executed completely
+- ✓ AI Agent responded correctly
+- ✓ System recovered successfully
+- ✓ All metrics within acceptable ranges
 
 ---
 
@@ -172,13 +171,14 @@ The archived demos used `validate.sh` to score legacy logs. The current workflow
 ### Access Grafana
 
 ```bash
-# Open in browser
-http://localhost:3000
+# Grafana runs on the loadgen VM in the distributed topology.
+# Open in browser:
+http://<AZURE_LOADGEN_IP>:3000
 
 # Login
 Username: admin
 Password: admin123
-````
+```
 
 ### Recommended Dashboards
 
@@ -361,7 +361,7 @@ curl -X POST http://localhost:8080/webhook \
 ### Monitoring Tools
 
 - **Prometheus**: [http://localhost:9090](http://localhost:9090)
-- **Grafana**: [http://localhost:3000](http://localhost:3000)
+- **Grafana (loadgen VM)**: http://<AZURE_LOADGEN_IP>:3000
 - **AlertManager**: [http://localhost:9093](http://localhost:9093)
 - **AI Agent**: [http://localhost:8080](http://localhost:8080)
 

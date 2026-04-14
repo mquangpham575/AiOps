@@ -11,7 +11,7 @@ networks:
 services:
   # ── TARGET APP ───────────────────────────────────────────────
   target-app:
-    build: ./services/target-app
+    build: ../../src/app
     container_name: target-app
     ports:
       - "80:5000"

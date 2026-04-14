@@ -36,7 +36,7 @@ Nếu Azure VMs đã bật sẵn và tunnel đã được mở sẵn, bạn có 
 
 ```powershell
 # Mở PowerShell tại thư mục dự án (DoAn)
-docker compose -f docker-compose.control.yml up -d --build
+docker compose -f ops/infra/docker-compose.control.yml up -d --build
 ```
 
 ### 2. Truy cập các Dashboard theo dõi
@@ -53,31 +53,41 @@ Ghi chú:
 
 ---
 
-## 🎮 Thực hiện các kịch bản Demo
+## 🎮 Thực hiện các kịch bản Demo (Chuẩn đánh giá)
 
-Sử dụng script tự động để giả lập các sự cố hệ thống và xem AI Agent tự động xử lý:
+Sử dụng các runner scripts chuẩn hóa (3 lần chạy, tự động tổng hợp số liệu):
 
-| Lệnh chạy                                             | Ý nghĩa kịch bản                                        |
-| :---------------------------------------------------- | :------------------------------------------------------ |
-| `python scripts/demo_runner.py --scenario all`        | **Chạy tất cả kịch bản** (Throughput/DDoS, CPU, RAM)    |
-| `python scripts/demo_runner.py --scenario throughput` | So sánh baseline vs DDoS (p50/p95/p99, rps, error rate) |
-| `python scripts/demo_runner.py --scenario cpu`        | Giả lập lỗi quá tải CPU                                 |
-| `python scripts/demo_runner.py --scenario memory`     | Giả lập lỗi cạn kiệt bộ nhớ RAM                         |
+### 1. Scenario 1: Baseline vs Load Comparison
+So sánh hệ thống khi rỗi (Phase A) và khi có tải (Phase B).
+```bash
+./scripts/run_scenario1.sh
+```
 
-Gợi ý so sánh AI Agent vs Rule-Based Agent:
+### 2. Scenario 2: CPU Stress Auto-Remediation (TTR)
+Đo lường giá trị của AI (MTTR) so với thao tác thủ công.
+```bash
+./scripts/run_scenario2.sh
+```
 
-| Lệnh chạy                                                                        | Ý nghĩa                   |
-| :------------------------------------------------------------------------------- | :------------------------ |
-| `python scripts/demo_runner.py --scenario cpu --agent-url http://localhost:8080` | Chạy với AI Agent         |
-| `python scripts/demo_runner.py --scenario cpu --agent-url http://localhost:5001` | Chạy với Rule-Based Agent |
+### 3. Scenario 3: DDoS Rate Limiting Trade-off
+Đánh giá hiệu quả chặn tấn công vs. ảnh hưởng người dùng thật qua 3 cấu hình.
+```bash
+./scripts/run_scenario3.sh
+```
 
 ---
 
-## 📈 Những gì cần quan sát (Làm báo cáo)
+## 📊 Những gì cần quan sát (Dashboard & Phân tích)
 
-1.  **Grafana**: Theo dõi các biểu đồ CPU, RAM và Latency. Demo thành công khi các biểu đồ này vọt lên cao (lúc lỗi) và tự động tụt xuống thấp (sau khi AI xử lý).
-2.  **AI Reasoning**: Trên giao diện [Action Log UI](http://localhost:8080/logs/ui), đọc cột **Reasoning** để hiểu _tại sao_ AI lại chọn hành động đó dựa trên các thông số hệ thống.
-3.  **MTTR**: Xem chỉ số thời gian phục hồi (MTTR) trên terminal hoặc file `results.csv` để đưa vào báo cáo đồ án.
+1.  **Grafana Dashboard**: 
+    - Truy cập Grafana và Import file [aiops_perf_eval.json](file:///d:/Study/3rd-y/3rdY-Sem2/NT531.Q21-DanhGiaHieuNang/DoAn/ops/monitoring/grafana/dashboards/aiops_perf_eval.json).
+    - Theo dõi **Latency p95**, **RPS**, và **Error Rate**.
+2.  **Kết quả tổng hợp**: 
+    - Xem bảng kết quả cuối cùng trên terminal sau khi chạy mỗi script.
+    - Kết quả chi tiết (CSV) được lưu tại thư mục `results/scenarioX/`.
+3.  **MTTR Analysis**: 
+    - Runner Sc2 sẽ tự động gọi `parse_agent_logs.py` để tính MTTR chi tiết.
+    - Log thô từ docker sẽ được lưu tại `results/scenario2/agent_run.log`.
 
 ---
 

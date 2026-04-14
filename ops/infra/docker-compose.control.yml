@@ -22,7 +22,7 @@ services:
     container_name: prometheus
     volumes:
       - type: bind
-        source: ./config/prometheus
+        source: ../monitoring/prometheus
         target: /etc/prometheus
       - type: volume
         source: prometheus_data
@@ -56,7 +56,7 @@ services:
     container_name: alertmanager
     volumes:
       - type: bind
-        source: ./config/alertmanager
+        source: ../monitoring/alertmanager
         target: /etc/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -78,10 +78,10 @@ services:
 
   # ── AI AGENT ─────────────────────────────────────────────────
   agent:
-    build: ./services/agent
+    build: ../../src/agent/ai-agent
     container_name: aiops-agent
     env_file:
-      - .env
+      - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
@@ -111,10 +111,10 @@ services:
 
   # ── RULE-BASED AGENT ─────────────────────────────────────────
   rule-based-agent:
-    build: ./services/rule-based-agent
+    build: ../../src/agent/rule-based-agent
     container_name: rule-based-agent
     env_file:
-      - .env
+      - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - DOCKER_HOST=tcp://host.docker.internal:2375

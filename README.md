@@ -1,6 +1,6 @@
 <div align="center">
 
-# Agentic AIOps: NT531 Auto-Remediation System
+# Agentic AIOps: NT531 Performance Evaluation System
 
 ### Automated Network Operations through Intelligent AI Agents
 
@@ -18,189 +18,101 @@
 
 ## Project Overview
 
-This repository contains a **Distributed AIOps Proof-of-Concept (PoC)** designed to automate the detection, analysis, and remediation of system incidents. Developed as part of the **NT531 Network Performance Evaluation** curriculum, the system evaluates the Mean Time To Recovery (MTTR) performance of an **LLM-powered AI Agent** against a traditional **Rule-Based Agent** baseline.
+This repository contains a **Distributed AIOps Proof-of-Concept (PoC)** designed to automate the detection, analysis, and remediation of system incidents. The system evaluates the performance of an **LLM-powered AI Agent** in terms of **Time To Recovery (TTR)** and its impact on legitimate traffic so as to prove its value over traditional baselines.
 
-The infrastructure simulates a real-world remote deployment:
-
-- **Control Plane (Windows PC):** Runs Prometheus + AlertManager and both agents (measurement-critical path).
-- **Loadgen/Observability Plane (Azure VM):** Runs Grafana (dashboards) and supporting observability services.
-- **Application Plane (Azure VM):** Runs the target application and exposes metrics for remote observability and management.
-
----
-
-## Key Features
-
-- **Direct MTTR Baseline Comparison:** A perfect scientific control. AlertManager fans out the _exact same webhook simultaneously_ to both a Rule-Based Agent and an AI Agent. Grafana automatically charts the time-to-recovery difference.
-- **Two-Phase AI Reasoning**: Phase 1 enriches each alert with live Prometheus metrics (CPU%, memory%, latency). Phase 2 feeds those real numbers to Google Gemini, which reasons from actual system state rather than just pattern-matching alert labels.
-- **Distributed Topology**: Cleanly split across `docker-compose.control.yml` (PC) and `docker-compose.app.yml` (Azure) via SSH-tunneled Docker access.
-- **Automated Metric Extraction**: `scripts/demo_runner.py` automatically timestamps webhook receipt, agent action latency, and metric recovery — exporting per-scenario results to CSV for thesis reporting.
+The infrastructure is distributed across local and remote (Azure) environments:
+- **Control Plane (Windows PC):** Runs Prometheus, AlertManager, and the AIOps Agents.
+- **Observability Plane (Azure VM 1):** Runs Grafana dashboards.
+- **Application Plane (Azure VM 2):** Runs the target application and metrics exporters.
 
 ---
 
-## Repository Structure
+## 📂 Repository Structure
 
 ```text
 DoAn/
-├── docker-compose.control.yml     # Control Plane: Prometheus, AlertManager, Agents
-├── docker-compose.app.yml         # Application Plane: Target app, node-exporter, cadvisor
-├── docker-compose.loadgen.yml     # Loadgen/Observability Plane: Grafana (+ supporting services)
-├── .env.example                   # Environment variable template
-├── services/                      # ── BUILDABLE COMPONENTS ──
-│   ├── agent/                     # AI Agent (Gemini API integrated)
-│   ├── rule-based-agent/          # Traditional baseline static-rule agent
-│   └── target-app/                # Monitored Flask application (the victim)
-├── config/                        # ── MOUNTED CONFIGURATIONS ──
-│   ├── prometheus/                # Scrape targets and alert rules
-│   ├── alertmanager/              # Webhook fan-out routing
-│   └── grafana/                   # Dashboards and datasources provisioning
-├── scripts/                       # ── AUTOMATION ──
-│   └── demo_runner.py             # MTTR measurement + CSV export runner
-├── loadtest/                      # Locust stress test scenarios
-├── tests/                         # Full Pytest suite (27+ tests)
-└── demos/                         # Legacy run logs (scripts removed)
+├── src/                           # ── SOURCE CODE ──
+│   ├── agent/                     # AI and Rule-based Agents
+│   └── app/                       # Target Flask Application
+├── ops/                           # ── OPERATIONS & INFRA ──
+│   ├── infra/                     # Docker Compose and Terraform
+│   └── monitoring/                # Prometheus, AlertManager, Grafana
+├── tests/                         # ── TESTING & BENCHMARKS ──
+│   ├── performance/               # Locust files and Scenarios (Sc1, Sc3)
+│   └── unit/                      # Pytest unit tests
+├── scripts/                       # ── AUTOMATION SCRIPTS ──
+│   ├── run_scenario1.sh           # Baseline vs Load Analysis
+│   ├── run_scenario2.sh           # Manual vs AI TTR Analysis
+│   ├── run_scenario3.sh           # DDoS Trade-off Analysis
+│   └── aiops-power.ps1            # Full system power cluster control
+├── docs/                          # Documentation and Legacy Demos
+├── results/                       # CSV and Log outputs per scenario
+└── DEMO_GUIDE.md                  # Quick-start instructions
 ```
 
 ---
 
-## System Architecture
+## 🎯 Evaluation Scenarios
 
-```mermaid
-graph TB
-    subgraph Azure ["Application Plane (Azure VM B2s)"]
-        App["Target Application (:80)"]
-        Node["node-exporter (:9100)"]
-        Cadvisor["cadvisor (:8080)"]
-        Docker["Docker Daemon (unix socket)"]
-    end
+The system is evaluated through three primary performance scenarios:
 
-    subgraph Loadgen ["Loadgen/Observability (Azure VM)"]
-        Graf["Grafana Dashboard (:3000)"]
-    end
+1.  **Scenario 1: Baseline vs Load**: Measures system degradation (p95 latency) under idle vs. sustained load to identify resource breaking points.
+2.  **Scenario 2: CPU Stress Auto-Remediation**: Quantifies the value of AI by comparing Manual Time-To-Remediation (TTR) against automated AI response.
+3.  **Scenario 3: DDoS Mitigation Trade-off**: Evaluates the effectiveness of `iptables` rate limiting in blocking floods while measuring collateral damage to legitimate users.
 
-    subgraph PC ["Control Plane (Local PC)"]
-        Prom["Prometheus (:9090)"]
-        AM["AlertManager (:9093)"]
+---
 
-        AIAgent["AI Agent (:8080)"]
-        RuleAgent["Rule-Based Agent (:5001)"]
-    end
+## 🕹️ Getting Started
 
-    %% Metric Flow
-    Node -.->|host metrics| Prom
-    Cadvisor -.->|container metrics| Prom
-    App -.->|app metrics| Prom
-    Prom ---> Graf
+### 1. Power Control
+The easiest way to manage the entire distributed system is via the PowerShell control script:
 
-    %% Alert Flow
-    Prom --->|Fires Alert| AM
-    AM ===>|Webhook Fan-out| AIAgent
-    AM ===>|Webhook Fan-out| RuleAgent
+```powershell
+# Start all VMs and containers (Local & Remote)
+.\scripts\aiops-power.ps1 start
 
-    %% Remediation Flow
-    AIAgent --->|Remote Control| Docker
-    RuleAgent --->|Remote Control| Docker
-    Docker --->|Restart/Kill| App
+# Check status of the cluster
+.\scripts\aiops-power.ps1 status
+```
 
-    style AIAgent fill:#f9f,stroke:#333,stroke-width:2px
-    style RuleAgent fill:#ffeedd,stroke:#333,stroke-width:2px
-    style Azure fill:#e6f7ff,stroke:#0078D4,stroke-width:2px
+### 2. Manual Commands
+If you need to run specific components:
+
+```bash
+# Start Control Plane locally
+docker compose -f ops/infra/docker-compose.control.yml up -d --build
 ```
 
 ---
 
-## Getting Started
+## 📊 Monitoring & Dashboards
 
-### Prerequisites
-
-- Docker & Docker Compose
-- An Azure Virtual Machine (B2s recommended) running Ubuntu + Docker Engine
-- Google Gemini API Key ([Get one here](https://aistudio.google.dev/))
-
-### 1. Application Plane Deployment (Azure VM)
-
-Ensure your Azure NSG allows Inbound TCP on ports `22` (SSH + Docker tunnel), `80` (App traffic), `8080` (cAdvisor), and `9100` (Node-exporter). Docker is accessed via SSH tunnel — no TCP port exposure needed. The `aiops-power.ps1` script manages the tunnel automatically.
-
-Clone this repo to your Azure VM and run:
-
-```bash
-docker compose -f docker-compose.app.yml up -d --build
-```
-
-### 2. Control Plane Deployment (Local PC)
-
-Copy `.env.example` to `.env` and fill out your `GEMINI_API_KEY`, `AGENT_API_KEY`. Be sure the Azure VM IP is correctly targeted in your `.yml` config files so Prometheus and the agents can reach the remote machine.
-
-```bash
-docker compose -f docker-compose.control.yml up -d --build
-```
-
-### Accessing Dashboards
+Access the following interfaces once the system is running:
 
 | Interface         | Address                         | Purpose                                        |
 | :---------------- | :------------------------------ | :--------------------------------------------- |
-| **Grafana**       | `http://localhost:3000`         | View the live AI vs Rule-Based MTTR Comparison |
-| **Prometheus**    | `http://localhost:9090`         | Verify Azure targets are `UP`                  |
-| **AI Agent Logs** | `http://localhost:8080/logs/ui` | Live view of AI reasoning and actions          |
-| **AlertManager**  | `http://localhost:9093`         | Review active alerts                           |
+| **Grafana**       | `http://<AZURE_IP>:3000`        | View Performance Dashboards (Import Sc JSON)  |
+| **AI Action Log** | `http://localhost:8080/logs/ui` | Live view of AI reasoning and actions          |
+| **Prometheus**    | `http://localhost:9090`         | Inspect metric scrape targets                  |
 
-### 3. Automated Power Management
-
-To quickly start or stop the entire distributed environment without manual `docker compose` commands, use the provided PowerShell script. This is the **recommended** way to run the project.
-
-```powershell
-# Start Azure VM and bring up all containers locally & remotely
-.\scripts\aiops-power.ps1 -Action start
-
-# Check status of the VM and containers
-.\scripts\aiops-power.ps1 -Action status
-
-# Stop and deallocate Azure VM to save credits
-.\scripts\aiops-power.ps1 -Action stop
-```
+Import the tailored dashboard from: `ops/monitoring/grafana/dashboards/aiops_perf_eval.json`.
 
 ---
 
-## Operations and Benchmarking
+## 📈 Benchmarking
 
-### Automated MTTR Extraction
-
-To automatically test the system and extract MTTR comparisons to a CSV file for your thesis:
+To run the full evaluation suite and generate reports:
 
 ```bash
-# Run all scenarios sequentially and export results
-python scripts/demo_runner.py --scenario all --export results.csv
-
-# Run a specific scenario (throughput, cpu, memory)
-python scripts/demo_runner.py --scenario throughput
+./scripts/run_scenario1.sh  # Iterative Baseline Analysis
+./scripts/run_scenario2.sh  # TTR Comparison
+./scripts/run_scenario3.sh  # DDoS Mitigation Analysis
 ```
-
-### Run Unit Tests
-
-```bash
-# Verify the 27+ test suite passes on the new directory architecture
-python -m pytest tests/ -v
-```
-
----
-
-## 📄 License
-
-<div align="center">
-
-**MIT License** • Copyright (c) 2026 NT531 AIOps Project Contributors
-
-</div>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction.
 
 ---
 
 ## 🌟 Acknowledgments
 
-<div align="center">
-
 **🎓 Course:** NT531 - Network System Performance Evaluation
 **🏫 Institution:** University of Information Technology
 **🤖 AI Partner:** Google Gemini AI
-
-</div>

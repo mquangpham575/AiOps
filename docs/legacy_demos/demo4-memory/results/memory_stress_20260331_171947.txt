@@ -1,0 +1,84 @@
+=== BASELINE MEMORY USAGE ===
+Timestamp: 2026-03-31T10:19:51Z
+Container Stats:
+target-app	0.01%	8.746MiB / 256MiB	1
+
+Memory Details:
+OCI runtime exec failed: exec failed: unable to start container process: exec: "free": executable file not found in $PATH
+N/A
+
+Prometheus Memory Available: "value":[1774952392.073,"677605376"]
+
+=== MEMORY STRESS TEST INITIATED ===
+Start Time: 2026-03-31T10:19:52Z
+Parameters:
+  - Concurrent Users: 10
+  - Spawn Rate: 5/sec
+  - Duration: 120s
+  - MB per Request: 50
+  - Memory Threshold: 60%
+
+=== DURING STRESS (Sample 1) ===
+Timestamp: 2026-03-31T10:20:14Z
+Container Stats:
+target-app	0.01%	7.93MiB / 256MiB	1
+
+Memory Details:
+OCI runtime exec failed: exec failed: unable to start container process: exec: "free": executable file not found in $PATH
+N/A
+
+=== DURING STRESS (Sample 2) ===
+Timestamp: 2026-03-31T10:20:20Z
+Container Stats:
+target-app	0.01%	7.875MiB / 256MiB	1
+
+=== DURING STRESS (Sample 3) ===
+Timestamp: 2026-03-31T10:20:27Z
+Container Stats:
+target-app	0.01%	7.695MiB / 256MiB	1
+
+=== DURING STRESS (Sample 4) ===
+Timestamp: 2026-03-31T10:20:33Z
+Container Stats:
+target-app	0.01%	7.527MiB / 256MiB	1
+
+=== AI AGENT DECISIONS ===
+Timestamp: 2026-03-31T10:21:09Z
+[{"action":"reduce_system_load","alert":"BaselineTest","confidence":0.8,"context":{},"llm_latency_s":1.697,"params":{},"reasoning":"Baseline performance test indicates potential system load issues, requiring investigation and potential remediation.","result":"System load reduction actions:\n\u2705 Restarted target-app\nCurrent load after actions: 1.83","scenario":"unknown","status":"firing","timestamp":"2026-03-31T09:47:24.543608+00:00","webhook_received_at":"2026-03-31T09:47:08.105110+00:00"},{"action":"apply_rate_limit","alert":"HighRequestRate","confidence":0.9,"context":{"latency_ms":NaN,"network_bytes":7732.23,"req_rate":98.37},"llm_latency_s":2.591,"params":{"interface":"eth0","rate":"50/sec"},"reasoning":"High request rate detected, indicating a potential DDoS attack. Immediate action is required to mitigate the impact.","result":"Rate limit 50/sec on eth0: code 0","scenario":"ddos","status":"firing","timestamp":"2026-03-31T09:50:42.506748+00:00","webhook_received_at":"2026-03-31T09:50:39.661326+00:00"},{"action":null,"alert":"HighRequestRate","context":{},"llm_latency_s":0,"params":{},"reasoning":"Alert resolved, no action needed.","result":null,"scenario":"ddos","status":"resolved","timestamp":"2026-03-31T09:51:09.675712+00:00","webhook_received_at":"2026-03-31T09:51:09.675691+00:00"},{"action":"apply_rate_limit","alert":"HighRequestLatency","confidence":0.9,"context":{"latency_ms":NaN,"network_bytes":"N/A","req_rate":0.52},"llm_latency_s":2.526,"params":{},"reasoning":"High latency detected, indicating a potential DDoS attack.","result":"Rate limit 50/sec on eth0: code 0","scenario":"ddos","status":"firing","timestamp":"2026-03-31T10:08:58.461184+00:00","webhook_received_at":"2026-03-31T10:08:55.485231+00:00"},{"action":null,"alert":"HighRequestLatency","context":{},"llm_latency_s":0,"params":{},"reasoning":"Alert resolved, no action needed.","result":null,"scenario":"ddos","status":"resolved","timestamp":"2026-03-31T10:09:25.451111+00:00","webhook_received_at":"2026-03-31T10:09:25.450970+00:00"},{"action":"reduce_system_load","alert":"ContainerHighCPU","confidence":0.9,"context":{"container_cpu":76.4,"cpu_pct":63.89,"load1":3.88,"load5":2.07},"llm_latency_s":2.044,"params":{},"reasoning":"High CPU utilization indicates a potential system overload, requiring immediate action to reduce the load.","result":"System load reduction actions:\n\u2705 Restarted target-app\nCurrent load after actions: 3.23","scenario":"cpu_stress","status":"firing","timestamp":"2026-03-31T10:15:09.214950+00:00","webhook_received_at":"2026-03-31T10:14:53.526789+00:00"},{"action":null,"alert":"ContainerHighCPU","context":{},"llm_latency_s":0,"params":{},"reasoning":"Alert resolved, no action needed.","result":null,"scenario":"cpu_stress","status":"resolved","timestamp":"2026-03-31T10:15:23.540772+00:00","webhook_received_at":"2026-03-31T10:15:23.540761+00:00"}]
+
+=== POST-REMEDIATION MEMORY CHECK ===
+Timestamp: 2026-03-31T10:21:30Z
+Container Stats:
+target-app	0.01%	7.074MiB / 256MiB	1
+
+Service Status: Running
+Memory Status:
+OCI runtime exec failed: exec failed: unable to start container process: exec: "free": executable file not found in $PATH
+N/A
+
+=== FINAL RECOVERY STATE ===
+Timestamp: 2026-03-31T10:22:20Z
+Container Stats:
+target-app	0.02%	7.41MiB / 256MiB
+
+=== DEMO 4 SUMMARY ===
+Memory Stress Parameters:
+  - Concurrent Users: 10
+  - MB per Request: 50
+  - Duration: 120s
+  - Target: target-app
+
+Timeline:
+  T+0s:  Baseline recorded
+  T+15s: Memory stress initiated
+  T+35s: Alert triggered (high memory sustained)
+  T+40s: AI Agent received alert
+  T+45s: Agent attempted remediation
+  T+60s: Service recovery measured
+  T+90s: System recovery confirmed
+
+Results:
+  ✗ AI Agent did not detect alert
+  ✓ Service remained healthy after remediation
+  ✓ Auto-remediation was successful
+

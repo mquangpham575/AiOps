@@ -32,7 +32,7 @@ load_dotenv()
 
 # ── Resolve paths ────────────────────────────────────────────
 ROOT_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT_DIR / "scenarios" / "config.yml"
+CONFIG_PATH = ROOT_DIR / "tests" / "performance" / "scenarios.yml"
 
 # ── Environment-based service URLs ───────────────────────────
 _azure_ip = os.environ.get("AZURE_VM_IP") or os.environ.get("AZURE_APP_IP")
@@ -291,7 +291,7 @@ class DemoRunner:
             run_time = f"{duration}s"
             return subprocess.Popen(
                 [sys.executable, "-m", "locust",
-                 "-f", str(ROOT_DIR / "loadtest" / "locustfile.py"),
+                 "-f", str(ROOT_DIR / "tests" / "performance" / "locustfile.py"),
                  f"--host={self.target_url}",
                  "--run-time", run_time, "--headless", "--tags", tags],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
@@ -304,7 +304,7 @@ class DemoRunner:
         tags = "baseline" if profile == "baseline" else profile
         return subprocess.Popen(
             [sys.executable, "-m", "locust",
-             "-f", str(ROOT_DIR / "loadtest" / "locustfile.py"),
+             "-f", str(ROOT_DIR / "tests" / "performance" / "locustfile.py"),
              f"--host={self.target_url}",
              "--run-time", f"{duration}s", "--headless", "--tags", tags],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,

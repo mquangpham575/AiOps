@@ -1,0 +1,73 @@
+=== BASELINE CPU USAGE ===
+Timestamp: 2026-03-31T10:13:30Z
+Container Stats:
+target-app	0.01%	7.973MiB / 256MiB	1
+
+Baseline Processes:
+OCI runtime exec failed: exec failed: unable to start container process: exec: "ps": executable file not found in $PATH
+
+Prometheus CPU Rate: 
+
+=== CPU STRESS TEST INITIATED ===
+Start Time: 2026-03-31T10:13:31Z
+Parameters:
+  - CPU Workers: 4
+  - Duration: 60s
+  - CPU Threshold: 80%
+
+=== DURING STRESS (Sample 1) ===
+Timestamp: 2026-03-31T10:13:49Z
+Container Stats:
+target-app	97.40%	32.84MiB / 256MiB	6
+
+Active Stress Processes:
+No stress processes found
+
+=== DURING STRESS (Sample 2) ===
+Timestamp: 2026-03-31T10:13:58Z
+Container Stats:
+target-app	101.38%	34.25MiB / 256MiB	6
+
+=== DURING STRESS (Sample 3) ===
+Timestamp: 2026-03-31T10:14:04Z
+Container Stats:
+target-app	102.23%	32.57MiB / 256MiB	6
+
+=== AI AGENT DECISIONS ===
+Timestamp: 2026-03-31T10:14:30Z
+[{"action":"reduce_system_load","alert":"BaselineTest","confidence":0.8,"context":{},"llm_latency_s":1.697,"params":{},"reasoning":"Baseline performance test indicates potential system load issues, requiring investigation and potential remediation.","result":"System load reduction actions:\n\u2705 Restarted target-app\nCurrent load after actions: 1.83","scenario":"unknown","status":"firing","timestamp":"2026-03-31T09:47:24.543608+00:00","webhook_received_at":"2026-03-31T09:47:08.105110+00:00"},{"action":"apply_rate_limit","alert":"HighRequestRate","confidence":0.9,"context":{"latency_ms":NaN,"network_bytes":7732.23,"req_rate":98.37},"llm_latency_s":2.591,"params":{"interface":"eth0","rate":"50/sec"},"reasoning":"High request rate detected, indicating a potential DDoS attack. Immediate action is required to mitigate the impact.","result":"Rate limit 50/sec on eth0: code 0","scenario":"ddos","status":"firing","timestamp":"2026-03-31T09:50:42.506748+00:00","webhook_received_at":"2026-03-31T09:50:39.661326+00:00"},{"action":null,"alert":"HighRequestRate","context":{},"llm_latency_s":0,"params":{},"reasoning":"Alert resolved, no action needed.","result":null,"scenario":"ddos","status":"resolved","timestamp":"2026-03-31T09:51:09.675712+00:00","webhook_received_at":"2026-03-31T09:51:09.675691+00:00"},{"action":"apply_rate_limit","alert":"HighRequestLatency","confidence":0.9,"context":{"latency_ms":NaN,"network_bytes":"N/A","req_rate":0.52},"llm_latency_s":2.526,"params":{},"reasoning":"High latency detected, indicating a potential DDoS attack.","result":"Rate limit 50/sec on eth0: code 0","scenario":"ddos","status":"firing","timestamp":"2026-03-31T10:08:58.461184+00:00","webhook_received_at":"2026-03-31T10:08:55.485231+00:00"},{"action":null,"alert":"HighRequestLatency","context":{},"llm_latency_s":0,"params":{},"reasoning":"Alert resolved, no action needed.","result":null,"scenario":"ddos","status":"resolved","timestamp":"2026-03-31T10:09:25.451111+00:00","webhook_received_at":"2026-03-31T10:09:25.450970+00:00"}]
+
+=== POST-REMEDIATION PROCESS CHECK ===
+Timestamp: 2026-03-31T10:14:46Z
+Current Processes:
+No stress processes
+
+=== POST-REMEDIATION CPU USAGE ===
+Container Stats:
+target-app	0.02%	11.87MiB / 256MiB	1
+
+=== FINAL RECOVERY STATE ===
+Timestamp: 2026-03-31T10:15:15Z
+Container Stats:
+target-app	0.01%	22.83MiB / 256MiB
+
+=== DEMO 3 SUMMARY ===
+Stress Parameters:
+  - CPU Workers: 4
+  - Duration: 60s
+  - Target was: target-app
+
+Timeline:
+  T+0s:  Baseline recorded
+  T+10s: CPU stress initiated
+  T+35s: Alert triggered (high CPU sustained)
+  T+40s: AI Agent received alert
+  T+45s: Agent attempted remediation
+  T+60s: Process termination verified
+  T+80s: System recovery measured
+
+Results:
+  ✗ AI Agent did not detect alert
+  ✓ Stress processes successfully terminated
+  ✓ Auto-remediation was successful
+

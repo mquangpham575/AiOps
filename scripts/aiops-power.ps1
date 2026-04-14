@@ -195,21 +195,21 @@ switch ($Action) {
             $sshKeyPath = Get-SshKeyPath
             
             Write-Host "Deploying Application Plane -> $APP_VM_NAME ($global:azureAppIp)..." -ForegroundColor Cyan
-            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f docker-compose.app.yml up -d --build"
+            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.app.yml up -d --build"
 
             Write-Host "Deploying Loadgen/Observability Plane -> $LOADGEN_VM_NAME ($global:azureLoadgenIp)..." -ForegroundColor Cyan
-            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f docker-compose.loadgen.yml up -d --build"
+            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.loadgen.yml up -d --build"
 
             Write-Host "Generating dynamic prometheus.yml..." -ForegroundColor Cyan
-            (Get-Content config\prometheus\prometheus.yml.template) `
+            (Get-Content ops\monitoring\prometheus\prometheus.yml.template) `
                 -replace '\$\{AZURE_APP_IP\}', $global:azureAppIp `
                 -replace '\$\{AZURE_LOADGEN_IP\}', $global:azureLoadgenIp `
-                | Set-Content config\prometheus\prometheus.yml
+                | Set-Content ops\monitoring\prometheus\prometheus.yml
 
             Start-DockerTunnel
 
             Write-Host "Starting Control Plane (Local PC)..." -ForegroundColor Cyan
-            docker compose -f docker-compose.control.yml up -d --build
+            docker compose -f ops/infra/docker-compose.control.yml up -d --build
 
             Write-Host "System fully started." -ForegroundColor Green
             Write-Host "  App: http://$global:azureAppIp" -ForegroundColor DarkGray
@@ -222,15 +222,15 @@ switch ($Action) {
     "stop" {
         if (Test-DockerRunning) {
             Write-Host "Stopping Local Control Plane..." -ForegroundColor Yellow
-            docker compose -f docker-compose.control.yml down
+            docker compose -f ops/infra/docker-compose.control.yml down
         }
 
         Stop-DockerTunnel
 
         $sshKeyPath = Get-SshKeyPath
         Write-Host "Stopping Remote Planes..." -ForegroundColor Yellow
-        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f docker-compose.app.yml down" 2>$null
-        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f docker-compose.loadgen.yml down" 2>$null
+        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.app.yml down" 2>$null
+        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.loadgen.yml down" 2>$null
 
         Write-Host "Deallocating Azure VMs..." -ForegroundColor Yellow
         foreach ($vm in @($APP_VM_NAME, $LOADGEN_VM_NAME)) {
@@ -245,7 +245,7 @@ switch ($Action) {
 
         Write-Host "`nLocal Docker Status:" -ForegroundColor Cyan
         if (Test-DockerRunning) {
-            docker compose -f docker-compose.control.yml ps
+            docker compose -f ops/infra/docker-compose.control.yml ps
         } else {
             Write-Host "  Docker Desktop not running" -ForegroundColor Yellow
         }

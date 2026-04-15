@@ -1,91 +1,65 @@
-# docker-compose.loadgen.yml — Azure VM Load Gen + Observability Plane
-# Services: otel-collector, jaeger, prometheus (local), grafana, node-exporter
-# k6 runs on bare host (as per docs)
-
-networks:
-  obs-net:
-    driver: bridge
+# ═══════════════════════════════════════════════════════════════════════════════════
+# docker-compose.loadgen.yml - Node 2: Load Generator
+# ═══════════════════════════════════════════════════════════════════════════════════
+#
+# Services: node-exporter, Pushgateway
+# VM: aiops-loadgen (D2ps_v5) | Private IP: 10.0.1.5
+#
+# NOTE: Locust chạy trên host (không trong container) để đạt hiệu năng tối đa.
+#
+# USAGE:
+#   docker compose -f docker-compose.loadgen.yml up -d
+#
+# Locust commands (chạy trên host):
+#   ATTACK_PROFILE=baseline locust -f tests/performance/locustfile.py \
+#     --host=http://10.0.1.6:80 --run-time 300s --headless --tags baseline
+#
+# Push metrics:
+#   python scripts/push-locust-metrics.py --csv-dir results --pushgateway http://localhost:9091
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 volumes:
-  prometheus_data:
-  grafana_data:
+  pushgateway-data:
+
+networks:
+  loadgen-net:
+    driver: bridge
 
 services:
-  # ── OTEL COLLECTOR ──────────────────────────────────────────
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
-    container_name: otel-collector
-    command: ["--config=/etc/otel-collector-config.yml"]
-    volumes:
-      - ./config/otel/otel-collector-config.yml:/etc/otel-collector-config.yml
-    ports:
-      - "4317:4317" # gRPC receiver
-      - "4318:4318" # HTTP receiver
-    networks:
-      - obs-net
-    restart: unless-stopped
-
-  # ── JAEGER ──────────────────────────────────────────────────
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: jaeger
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    ports:
-      - "16686:16686" # UI
-      - "4317"       # gRPC (internal for collector)
-    networks:
-      - obs-net
-    restart: unless-stopped
-
-  # ── PROMETHEUS (Local TSDB) ──────────────────────────────────
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus-loadgen
-    volumes:
-      - ./config/prometheus-loadgen/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-remote-write-receiver"
-    ports:
-      - "9090:9090"
-    networks:
-      - obs-net
-    restart: unless-stopped
-
-  # ── GRAFANA ──────────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana-loadgen
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning/dashboards
-      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
-    ports:
-      - "3000:3000"
-    networks:
-      - obs-net
-    restart: unless-stopped
-
-  # ── NODE EXPORTER (host metrics) ─────────────────────────────
+  # ── NODE EXPORTER (Monitor Locust host) ───────────────────────────────────
   node-exporter:
     image: prom/node-exporter:latest
-    container_name: node-exporter-loadgen
-    pid: host
+    container_name: node-exporter
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
     ports:
       - "9100:9100"
     networks:
-      - obs-net
+      - loadgen-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.2"
+
+  # ── PUSHGATEWAY (Collect Locust metrics) ───────────────────────────────────
+  pushgateway:
+    build:
+      context: ../monitoring/pushgateway
+      dockerfile: Dockerfile
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    volumes:
+      - pushgateway-data:/data
+    networks:
+      - loadgen-net
     restart: unless-stopped

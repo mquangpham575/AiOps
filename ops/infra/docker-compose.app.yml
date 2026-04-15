@@ -1,24 +1,31 @@
-# docker-compose.app.yml — Azure VM Application Plane
-# Services: target-app (nginx on :80), node-exporter, cadvisor
+# ═══════════════════════════════════════════════════════════════════════════════════
+# docker-compose.app.yml - Node 3: Application Plane
+# ═══════════════════════════════════════════════════════════════════════════════════
 #
-# Usage (on Azure VM):
-#   docker compose -f docker-compose.app.yml up -d
+# Services: target-app, node-exporter, cAdvisor
+# VM: aiops-app (D2ps_v5) | Private IP: 10.0.1.6
+#
+# USAGE:
+#   docker compose -f docker-compose.app.yml up -d --build
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 networks:
   app-net:
     driver: bridge
 
 services:
-  # ── TARGET APP ───────────────────────────────────────────────
+  # ── TARGET APP ───────────────────────────────────────────────────────────────
   target-app:
-    build: ../../src/app
+    build: ../../src/app/target-app
     container_name: target-app
+    environment:
+      - FLASK_ENV=production
     ports:
-      - "80:5000"
+      - "80:80"
     networks:
       - app-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -26,41 +33,44 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
           cpus: "1.0"
         reservations:
-          memory: 64M
+          memory: 128M
           cpus: "0.1"
 
-  # ── NODE EXPORTER (host metrics) ─────────────────────────────
+  # ── NODE EXPORTER (Monitor App host) ─────────────────────────────────────
   node-exporter:
     image: prom/node-exporter:latest
     container_name: node-exporter
-    pid: host
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     ports:
       - "9100:9100"
     networks:
       - app-net
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9100/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.2"
 
-  # ── CADVISOR (container metrics) ─────────────────────────────
+  # ── CADVISOR (Container metrics) ────────────────────────────────────────────
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
-    privileged: true
+    command:
+      - '--housekeeping_interval=30s'
+      - '--docker_only=true'
+      - '--store_container_labels=false'
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
@@ -70,9 +80,9 @@ services:
       - "8080:8080"
     networks:
       - app-net
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.3"

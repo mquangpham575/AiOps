@@ -1,12 +1,13 @@
-# docker-compose.control.yml — PC Control Plane
-# Services: prometheus, alertmanager, ai-agent, rule-based-agent
+# ═══════════════════════════════════════════════════════════════════════════════════
+# docker-compose.control.yml - Node 1: Control Plane
+# ═══════════════════════════════════════════════════════════════════════════════════
 #
-# Usage:
-#   docker compose -f docker-compose.control.yml up -d
+# Services: Prometheus, AlertManager, AI Agent, Rule-Based Agent, Grafana, Pushgateway
+# VM: aiops-control (B2ps_v2) | Private IP: 10.0.1.4
 #
-# Notes:
-# - Remote Docker access is via SSH tunnel to localhost:2375 (see scripts/aiops-power.ps1).
-# - Grafana runs on the loadgen VM; agents annotate via GRAFANA_URL=http://${AZURE_LOADGEN_IP}:3000.
+# USAGE:
+#   docker compose -f docker-compose.control.yml up -d --build
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 networks:
   control-net:
@@ -14,9 +15,10 @@ networks:
 
 volumes:
   prometheus_data:
+  grafana_data:
 
 services:
-  # ── PROMETHEUS ───────────────────────────────────────────────
+  # ── PROMETHEUS ────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -30,19 +32,12 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
-      - "--web.console.templates=/usr/share/prometheus/consoles"
       - "--web.enable-lifecycle"
       - "--storage.tsdb.retention.time=7d"
     ports:
       - "9090:9090"
     networks:
       - control-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
     deploy:
       resources:
@@ -50,7 +45,7 @@ services:
           memory: 1G
           cpus: "1"
 
-  # ── ALERTMANAGER ─────────────────────────────────────────────
+  # ── ALERTMANAGER ───────────────────────────────────────────────────────────
   alertmanager:
     image: prom/alertmanager:latest
     container_name: alertmanager
@@ -64,11 +59,6 @@ services:
       - "9093:9093"
     networks:
       - control-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9093/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
     deploy:
       resources:
@@ -76,24 +66,24 @@ services:
           memory: 256M
           cpus: "0.2"
 
-  # ── AI AGENT ─────────────────────────────────────────────────
-  agent:
+  # ── AI AGENT ───────────────────────────────────────────────────────────────
+  ai-agent:
     build: ../../src/agent/ai-agent
-    container_name: aiops-agent
+    container_name: ai-agent
     env_file:
       - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
+      - ALERTMANAGER_URL=http://alertmanager:9093
       - DOCKER_HOST=tcp://host.docker.internal:2375
-      - LOG_LEVEL=INFO
-      - PYTHONUNBUFFERED=1
-      - GRAFANA_URL=http://${AZURE_LOADGEN_IP}:3000
-      - GRAFANA_TOKEN=${GRAFANA_TOKEN:-}
+      - GRAFANA_URL=http://grafana:3000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG_MODE=${DEBUG_MODE:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8080:8080"
+      - "8083:8080"
     networks:
       - control-net
     depends_on:
@@ -105,11 +95,8 @@ services:
         limits:
           memory: 512M
           cpus: "0.5"
-        reservations:
-          memory: 128M
-          cpus: "0.1"
 
-  # ── RULE-BASED AGENT ─────────────────────────────────────────
+  # ── RULE-BASED AGENT ────────────────────────────────────────────────────────
   rule-based-agent:
     build: ../../src/agent/rule-based-agent
     container_name: rule-based-agent
@@ -117,8 +104,9 @@ services:
       - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
+      - PROMETHEUS_URL=http://prometheus:9090
+      - ALERTMANAGER_URL=http://alertmanager:9093
       - DOCKER_HOST=tcp://host.docker.internal:2375
-      - PYTHONUNBUFFERED=1
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -134,6 +122,42 @@ services:
         limits:
           memory: 256M
           cpus: "0.3"
-        reservations:
-          memory: 64M
-          cpus: "0.05"
+
+  # ── GRAFANA ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - type: bind
+        source: ../monitoring/grafana/provisioning
+        target: /etc/grafana/provisioning
+      - type: bind
+        source: ../monitoring/grafana/dashboards
+        target: /var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    networks:
+      - control-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.3"
+
+  # ── PUSHGATEWAY ────────────────────────────────────────────────────────────
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - control-net
+    restart: unless-stopped

@@ -1,12 +1,4 @@
 # prometheus.yml — AIOps 3-Node Azure Architecture
-# ==============================================================================
-# Prometheus runs on Control Node (10.0.1.4) and scrapes all targets
-# via private VNet IPs.
-#
-# Architecture:
-#   Node 1 (Control): 10.0.1.4 - Prometheus, Grafana, AI Agent
-#   Node 2 (Load Gen): 10.0.1.5 - node-exporter, Pushgateway
-#   Node 3 (App):      10.0.1.6 - target-app, node-exporter, cAdvisor
 
 global:
   scrape_interval: 15s
@@ -21,31 +13,28 @@ rule_files:
   - "alert.rules.yml"
 
 scrape_configs:
-  # ── Control Node (localhost) ───────────────────────────────────
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
 
   - job_name: "aiops-agent"
     static_configs:
-      - targets: ["10.0.1.4:8083"]
+      - targets: ["172.17.0.8:8080"]
     metrics_path: /metrics
 
   - job_name: "rule-based-agent"
     static_configs:
-      - targets: ["10.0.1.4:5001"]
+      - targets: ["172.17.0.6:5001"]
     metrics_path: /metrics
 
   - job_name: "pushgateway"
     static_configs:
       - targets: ["10.0.1.5:9091"]
 
-  # ── Load Generator Node (10.0.1.5) ───────────────────────────
   - job_name: "node-exporter-loadgen"
     static_configs:
       - targets: ["10.0.1.5:9100"]
 
-  # ── App Node (10.0.1.6) ───────────────────────────────────────
   - job_name: "target-app"
     static_configs:
       - targets: ["10.0.1.6:80"]
@@ -57,4 +46,4 @@ scrape_configs:
 
   - job_name: "cadvisor-app"
     static_configs:
-      - targets: ["10.0.1.6:9101"]
+      - targets: ["10.0.1.6:8080"]

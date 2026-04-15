@@ -1,56 +1,89 @@
 #!/bin/bash
 
-# ═══════════════════════════════════════════════════════════════
-# Scenario 2: CPU Stress Auto-Remediation (TTR Analysis)
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# run_scenario2.sh — Thin wrapper for demo_runner.py (CPU Remediation MTTR)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# MỤC ĐÍCH:
+#   Chạy kịch bản 2: CPU Stress Auto-Remediation
+#   So sánh MTTR giữa AI Agent và Rule-Based Agent
+#
+# ĐẦU RA:
+#   results/cpu/
+#   ├── runs/
+#   │   ├── run_001/
+#   │   │   └── remediation_metrics.json
+#   │   ├── run_002/
+#   │   └── run_003/
+#   ├── summary.json         # Aggregated MTTR stats
+#   └── results.csv         # CSV export
+#
+# CÁCH DÙNG:
+#   ./scripts/run_scenario2.sh                    # Default: 3 iterations
+#   ./scripts/run_scenario2.sh --iterations 5     # Custom iterations
+#
+# KẾT QUẢ MTTR:
+#   - detection_s: Thời gian phát hiện (T1 - T0)
+#   - response_s: Thời gian phản hồi (T2 - T1)
+#   - remediation_s: Thời gian khắc phục (T3 - T2)
+#   - mttr_s: Mean Time To Recovery tổng thể (T3 - T0)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-TARGET_URL="http://localhost:5000"
-RESULTS_DIR="results/scenario2"
-STRESS_DURATION=300
-WORKERS=4
+set -e
 
-mkdir -p $RESULTS_DIR
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+RESULTS_DIR="$ROOT_DIR/results/cpu"
 
-echo "============================================================"
-echo " 🔥 [SCENARIO-2] Manual vs AI-Assisted Auto-Remediation"
-echo "============================================================"
-echo " This test measures Mean Time To Recovery (MTTR)."
-echo "------------------------------------------------------------"
+echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+echo "║  DEMO: Kịch bản 2 - CPU Stress Auto-Remediation (MTTR)                     ║"
+echo "╠══════════════════════════════════════════════════════════════════════════════╣"
+echo "║  Mục tiêu:                                                                    ║"
+echo "║    - Đo MTTR (Mean Time To Recovery) cho sự cố CPU stress                   ║"
+echo "║    - So sánh AI Agent vs Rule-Based Agent                                    ║"
+echo "║    - Phân tích: detection + response + remediation time                     ║"
+echo "║                                                                              ║"
+echo "║  Injection:                                                                   ║"
+echo "║    stress-ng --cpu 4 --timeout {duration}s                                   ║"
+echo "║                                                                              ║"
+echo "║  Recovery criteria:                                                           ║"
+echo "║    CPU% < 30% for 3 consecutive polls                                        ║"
+echo "╚══════════════════════════════════════════════════════════════════════════════╝"
 
-# ── RUN 1: Manual Baseline ────────────────────────────────────
-echo "🚀 [RUN 1/3] TYPE: Manual Baseline (Simulated SLA 5m)"
-echo "   [ACTION] Please DISABLE the AI Agent now (docker stop aiops-agent)."
-echo "   [ACTION] Press ENTER when ready to trigger stress..."
-read
-
-./scripts/trigger_cpu_stress.sh --duration $STRESS_DURATION --workers $WORKERS
-
-echo ""
-echo "   [STATUS] Manual run finished. Record the TTR for your report."
-echo "   [ACTION] Please RE-ENABLE the AI Agent (docker start aiops-agent)."
-echo "   [ACTION] Press ENTER to continue with AI runs..."
-read
-
-# ── RUN 2 & 3: AI Assisted ────────────────────────────────────
-for i in {2..3}
-do
-    echo ""
-    echo "🚀 [RUN $i/3] TYPE: AI-Assisted Auto-Remediation"
-    ./scripts/trigger_cpu_stress.sh --duration $STRESS_DURATION --workers $WORKERS
-    
-    echo "   [STATUS] Run $i complete. Waiting 30s cooldown..."
-    sleep 30
+# Parse arguments
+ITERATIONS=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --iterations)
+            ITERATIONS="--iterations $2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--iterations N]"
+            exit 1
+            ;;
+    esac
 done
 
-echo ""
-echo "============================================================"
-echo " 📊 [ANALYSIS] Parsing Agent Logs for TTR Breakdown"
-echo "============================================================"
-# Point 2: TTR breakdown (ensured)
-# We assume logs are redirected or we read from docker logs
-docker logs aiops-agent > $RESULTS_DIR/agent_run.log 2>&1
-python3 scripts/parse_agent_logs.py $RESULTS_DIR/agent_run.log
+# Create results directory
+mkdir -p "$RESULTS_DIR"
 
-echo "------------------------------------------------------------"
-echo " ✅ Scenario 2 Demo Finished."
-echo "============================================================"
+# Run demo_runner.py
+cd "$ROOT_DIR"
+python scripts/demo_runner.py \
+    --scenario cpu \
+    --json-output \
+    --results-dir "$RESULTS_DIR" \
+    $ITERATIONS
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+echo "║  Kết quả đã được lưu vào:                                                      ║"
+echo "║    $RESULTS_DIR/summary.json                                                  ║"
+echo "║    $RESULTS_DIR/results.csv                                                   ║"
+echo "║                                                                              ║"
+echo "║  Để so sánh AI vs Rule-Based Agent, chạy với --agent-url khác nhau:         ║"
+echo "║    python scripts/demo_runner.py --scenario cpu --agent-url http://:8080     ║"
+echo "║    python scripts/demo_runner.py --scenario cpu --agent-url http://:5001     ║"
+echo "╚══════════════════════════════════════════════════════════════════════════════╝"

@@ -1,98 +1,174 @@
-# 🚀 Hướng Dẫn Nhanh: Chạy Demo AiOps
+# Hướng Dẫn Chạy Demo AIOps 3-Node Azure
 
-Làm theo các bước sau để thiết lập và chạy bản demo AiOps. Hướng dẫn này dành cho các cộng sự đã có mã nguồn, file `.env` và file chìa khóa SSH (`aiops_key`).
-
----
-
-## 📋 Điều kiện tiên quyết
-
-1.  **Docker Desktop**: Đảm bảo Docker Desktop đã được cài đặt và đang ở trạng thái **Running** (màu xanh).
-2.  **Python 3.10+**: Cần có Python để chạy script demo.
-3.  **Chìa khóa SSH**: Đặt file `aiops_key` vào thư mục `.ssh` của người dùng:
-    - Đường dẫn: `C:\Users\<Tên_Máy_Tính>\.ssh\aiops_key`
-4.  **Biến môi trường**: Đảm bảo file `.env` đã nằm ở thư mục gốc của dự án.
-5.  **Cài thư viện Python**:
-    ```powershell
-    pip install -r loadtest/requirements.txt
-    ```
+## Mục lục
+1. [Điều kiện tiên quyết](#điều-kiện-tiên-quyết)
+2. [Khởi động hệ thống](#khởi-động-hệ-thống)
+3. [Chạy các kịch bản đánh giá](#chạy-các-kịch-bản-đánh-giá)
+4. [Đầu ra và kết quả](#đầu-ra-và-kết-quả)
+5. [Xử lý lỗi thường gặp](#xử-lý-lỗi-thường-gặp)
 
 ---
 
-## 🕹️ Khởi động hệ thống
+## Điều kiện tiên quyết
 
-### 1. Bật hệ thống (khuyến nghị)
+1. **Azure subscription**: Có quyền truy cập resource group `rg-aiops`
+2. **SSH key**: File `.ssh/aiops3_key` trong thư mục project
+3. **Azure CLI**: Đã login (`az login`)
+4. **Python 3.10+**: Để chạy scripts
 
-Khuyến nghị dùng script để:
+---
 
-- bật Azure VMs
-- mở SSH tunnel cho Docker (`localhost:2375`)
-- khởi động Control Plane cục bộ
+## Khởi động hệ thống
+
+### Bước 1: Deploy infrastructure lên Azure
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\aiops-power.ps1 start
+# Deploy tất cả 3 nodes lên Azure
+.\scripts\aiops-power.ps1 start
 ```
 
-Nếu Azure VMs đã bật sẵn và tunnel đã được mở sẵn, bạn có thể chỉ khởi động Control Plane:
+Script này sẽ:
+1. Start 3 Azure VMs
+2. Clone/pull repo trên mỗi VM
+3. Deploy Docker containers
+
+### Bước 2: Truy cập Dashboard (Sử dụng Public IP)
+
+| Service | Địa chỉ Public | Purpose |
+|---------|----------|---------------------|
+| Grafana | http://104.215.158.157:3000 | View dashboards (Node 1) |
+| AI Agent | http://104.215.158.157:8083/logs/ui | Live AI Actions (Node 1) |
+| Prometheus | http://104.215.158.157:9090 | Scrape targets (Node 1) |
+| Pushgateway | http://104.215.158.157:9091 | LoadGen ingress (Node 1) |
+| Target App | http://4.194.57.3:80/health | Target status (Node 3) |
+| cAdvisor | http://4.194.57.3:8080 | Container metrics (Node 3) |
+
+### Kiểm tra trạng thái
 
 ```powershell
-# Mở PowerShell tại thư mục dự án (DoAn)
-docker compose -f ops/infra/docker-compose.control.yml up -d --build
-```
-
-### 2. Truy cập các Dashboard theo dõi
-
-Mở trình duyệt và truy cập các địa chỉ sau:
-
-- **Grafana Dashboard**: `http://<AZURE_LOADGEN_IP>:3000` (User/Pass: `admin` / `admin123`)
-- **AI Live Action Log**: [http://localhost:8080/logs/ui](http://localhost:8080/logs/ui) (Xem AI phân tích lỗi thời gian thực)
-
-Ghi chú:
-
-- `AZURE_LOADGEN_IP` nằm trong file `.env`.
-- Prometheus + AlertManager chạy trên PC (localhost).
-
----
-
-## 🎮 Thực hiện các kịch bản Demo (Chuẩn đánh giá)
-
-Sử dụng các runner scripts chuẩn hóa (3 lần chạy, tự động tổng hợp số liệu):
-
-### 1. Scenario 1: Baseline vs Load Comparison
-So sánh hệ thống khi rỗi (Phase A) và khi có tải (Phase B).
-```bash
-./scripts/run_scenario1.sh
-```
-
-### 2. Scenario 2: CPU Stress Auto-Remediation (TTR)
-Đo lường giá trị của AI (MTTR) so với thao tác thủ công.
-```bash
-./scripts/run_scenario2.sh
-```
-
-### 3. Scenario 3: DDoS Rate Limiting Trade-off
-Đánh giá hiệu quả chặn tấn công vs. ảnh hưởng người dùng thật qua 3 cấu hình.
-```bash
-./scripts/run_scenario3.sh
+# Kiểm tra VM và service status
+.\scripts\aiops-power.ps1 status
 ```
 
 ---
 
-## 📊 Những gì cần quan sát (Dashboard & Phân tích)
+### Chạy kịch bản (Thực hiện trên Node 2)
 
-1.  **Grafana Dashboard**: 
-    - Truy cập Grafana và Import file [aiops_perf_eval.json](file:///d:/Study/3rd-y/3rdY-Sem2/NT531.Q21-DanhGiaHieuNang/DoAn/ops/monitoring/grafana/dashboards/aiops_perf_eval.json).
-    - Theo dõi **Latency p95**, **RPS**, và **Error Rate**.
-2.  **Kết quả tổng hợp**: 
-    - Xem bảng kết quả cuối cùng trên terminal sau khi chạy mỗi script.
-    - Kết quả chi tiết (CSV) được lưu tại thư mục `results/scenarioX/`.
-3.  **MTTR Analysis**: 
-    - Runner Sc2 sẽ tự động gọi `parse_agent_logs.py` để tính MTTR chi tiết.
-    - Log thô từ docker sẽ được lưu tại `results/scenario2/agent_run.log`.
+Kịch bản phải được chạy từ **Node 2 (LoadGen)** để có thể bơm tải và thu thập metrics chính xác.
+
+#### Cách 1: Chạy qua Azure RunCommand (Khuyên dùng)
+```powershell
+# Chạy Scenario Throughput (60s)
+az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm --command-id RunShellScript --scripts "cd /home/azureuser/AiOps" "python3 scripts/demo_runner.py --scenario throughput --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090 --agent-key agent_secret_key_nt531"
+
+# Chạy Scenario CPU MTTR
+az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm --command-id RunShellScript --scripts "cd /home/azureuser/AiOps" "python3 scripts/demo_runner.py --scenario cpu --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090 --agent-key agent_secret_key_nt531"
+```
+
+#### Cách 2: Chạy trực tiếp qua SSH
+```bash
+# Login vào Node 2
+ssh -i .ssh/aiops3_key_rsa azureuser@104.215.191.69
+
+# Chạy demo (tất cả scenarios)
+cd /home/azureuser/AiOps
+python3 scripts/demo_runner.py --scenario all --iterations 1 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090
+```
+
+### Với custom parameters
+
+```bash
+python scripts/demo_runner.py --scenario throughput --iterations 3 --duration 300 --json-output
+```
 
 ---
 
-## 🛑 Xử lý lỗi thường gặp
+## Đầu ra và kết quả
 
-- **"SSH Permission Denied"**: Kiểm tra lại đường dẫn file `aiops_key` đã đúng chưa và file có bị đặt mật khẩu (passphrase) hay không.
-- **"Cannot connect to Docker"**: Kiểm tra Docker Desktop đã bật chưa.
-- **"Metrics are empty"**: Đợi khoảng 30-60 giây sau khi khởi động để Prometheus bắt đầu thu thập dữ liệu từ Azure.
+### Cấu trúc thư mục kết quả
+
+```
+results/
+├── all_scenarios.json           # Combined JSON
+├── throughput/
+│   ├── runs/
+│   │   ├── run_001/
+│   │   │   ├── baseline_metrics.json
+│   │   │   └── load_metrics.json
+│   │   ├── run_002/
+│   │   └── run_003/
+│   ├── summary.json             # Aggregated stats (mean ± stdev)
+│   ├── comparison.json          # Baseline vs Load comparison
+│   └── results.csv              # CSV export
+├── cpu/
+│   └── ...
+└── memory/
+    └── ...
+```
+
+### Xem kết quả nhanh
+
+```bash
+# Xem comparison summary
+cat results/throughput/comparison.json | jq
+
+# Xem MTTR stats
+cat results/cpu/summary.json | jq
+```
+
+---
+
+## Baseline Comparison
+
+| Scenario | Baseline | Load/Stress | Pass Criteria |
+|----------|----------|-------------|---------------|
+| throughput | 20 users, stable | 50→500 users, staged | Load p95 < 3x Baseline p95 |
+| cpu | Normal | stress-ng injection | MTTR < threshold |
+| memory | Normal | Legitimate + Attack | Success rate > threshold |
+
+---
+
+## Dừng hệ thống
+
+```powershell
+# Stop containers và deallocate VMs
+.\scripts\aiops-power.ps1 stop
+```
+
+---
+
+## Xử lý lỗi thường gặp
+
+### "SSH Permission Denied"
+- Kiểm tra SSH key: `.ssh/aiops3_key`
+- Kiểm tra Azure VM đã running chưa
+
+### "Metrics are empty"
+- Đợi 30-60 giây sau khi khởi động để Prometheus bắt đầu scrape
+- Kiểm tra Prometheus targets: http://104.215.158.157:9090/targets
+
+### Kiểm tra containers đang chạy
+
+```bash
+# SSH vào VM và kiểm tra
+ssh -i .ssh/aiops3_key_rsa azureuser@104.215.158.157 "docker ps"
+```
+
+---
+
+## Tips cho Demo
+
+1. **Chạy trước 1 iteration** để verify setup:
+   ```bash
+   python scripts/demo_runner.py --scenario throughput --iterations 1 --json-output
+   ```
+
+2. **Xem dashboard trực tiếp**:
+   - Mở Grafana: http://104.215.191.69:3000
+   - Import dashboard: `ops/monitoring/grafana/dashboards/aiops_perf_eval.json`
+
+3. **Debug containers**:
+   ```bash
+   ssh -i .ssh/aiops3_key azureuser@10.0.1.4
+   docker compose -f ops/infra/docker-compose.control.yml logs -f
+   ```

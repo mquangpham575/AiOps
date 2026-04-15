@@ -1,51 +1,83 @@
 """
-locustfile.py — Load test scenarios for AIOps evaluation.
+locustfile.py — AIOps Performance Evaluation Load Test
+=====================================================
 
-Cách chạy (từ thư mục gốc):
-  # DDoS scenario (staged: warm-up → ramp → peak over 3 min):
-  ATTACK_PROFILE=ddos locust -f loadtest/locustfile.py \
-    --host=http://<AZURE_VM_IP> --run-time 3m --headless --tags ddos
+MỤC TIÊU ĐÁNH GIÁ:
+  - So sánh hiệu năng baseline vs stress (intra-run comparison)
+  - Đo latency percentiles (p50, p95, p99) dưới tải khác nhau
+  - Đánh giá overhead của AI Agent lên hệ thống
+  - Đo throughput và error rate dưới various load profiles
 
-  # Memory scenario (staged: warm-up → ramp → peak over 3 min):
-  ATTACK_PROFILE=memory locust -f loadtest/locustfile.py \
-    --host=http://<AZURE_VM_IP> --run-time 3m --headless --tags memory
+TARGET METRICS (Prometheus):
+  - flask_http_request_duration_seconds (histogram) → latency percentiles
+  - flask_http_requests_total (counter) → throughput
+  - container_cpu_usage_seconds_total → CPU usage
+  - container_memory_usage_bytes → Memory usage
 
-  # UI mode (manual exploration — no ATTACK_PROFILE needed):
-  locust -f loadtest/locustfile.py --host=http://<AZURE_VM_IP>
+TAG MAPPING:
+  baseline    → NormalUser tasks only (light load, baseline measurement)
+  ddos        → NormalUser + AttackUser tasks (DDoS simulation)
+  memory      → MemoryStressUser tasks (memory exhaustion test)
+  legi_attack → LegitimateUser + AttackUser tasks (DDoS trade-off analysis)
 
-NOTE: StagedLoadShape overrides --users / --spawn-rate CLI flags.
-      demo_runner.py passes ATTACK_PROFILE automatically via env=.
+CÁCH CHẠY:
+  # Baseline measurement
+  ATTACK_PROFILE=baseline locust -f tests/performance/locustfile.py \
+    --host=http://<IP> --run-time 300s --headless --tags baseline
 
-Metrics tracked in Grafana:
-  - flask_http_request_duration_seconds (latency)
-  - flask_http_requests_total (throughput)
-  - node_network_receive_bytes_total (bandwidth)
+  # DDoS scenario
+  ATTACK_PROFILE=ddos locust -f tests/performance/locustfile.py \
+    --host=http://<IP> --run-time 300s --headless --tags ddos
+
+  # Memory stress
+  ATTACK_PROFILE=memory locust -f tests/performance/locustfile.py \
+    --host=http://<IP> --run-time 300s --headless --tags memory
+
+  # DDoS trade-off (legitimate users vs attackers)
+  locust -f tests/performance/locustfile.py \
+    --host=http://<IP> --run-time 300s --headless --tags legi_attack
+
+EXPECTED RESULTS:
+  - Baseline: p50 < 50ms, p95 < 100ms, p99 < 200ms
+  - Under load: p95 increases 2-5x depending on system capacity
+  - Memory: Sustained allocation triggers container restart
+
+PROFILES (StagedLoadShape):
+  baseline: Stable 20 users
+  ddos: 50 → 500 users (warm-up → ramp → peak)
+  memory: 5 → 20 users (sustained memory allocation)
 """
 
 from locust import HttpUser, LoadTestShape, task, between, events, tag
 import os
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ── Staged attack profiles ────────────────────────────────────────────────────
 # Each tuple: (start_time_s, target_users, spawn_rate)
 # The last entry with target_users=None signals end of test.
 _PROFILES: dict[str, list[tuple]] = {
     "baseline": [
-        # Stable baseline load used for baseline-vs-ddos comparisons.
-        # Intentionally low and steady; runtime is controlled by --run-time.
-        (0,   20,  2),
+        # Stable baseline load — low and steady for baseline measurement.
+        # Runtime controlled by --run-time flag.
+        (0, 20, 2),
         (3600, None, 0),
     ],
     "ddos": [
-        (0,   50,  3),    # warm-up:  50 users, ramp at  3/s for 30s
-        (30,  500, 10),   # ramp:    500 users, ramp at 10/s for 60s
-        (90,  500, 50),   # peak:    500 users, hold at 50/s for 90s
-        (180, None, 0),   # stop
+        # DDoS simulation: warm-up → ramp → sustained attack
+        (0, 50, 3),  # warm-up:  50 users, ramp at  3/s for ~17s
+        (30, 500, 10),  # ramp:    500 users, ramp at 10/s for ~47s
+        (90, 500, 50),  # peak:    500 users, hold at 50/s for ~8s
+        (180, None, 0),  # stop
     ],
     "memory": [
-        (0,   5,  1),     # warm-up:   5 users, ramp at 1/s for 30s
-        (30,  20, 2),     # ramp:     20 users, ramp at 2/s for 60s
-        (90,  20, 5),     # peak:     20 users, hold at 5/s for 90s
-        (180, None, 0),   # stop
+        # Memory exhaustion: sustained allocation to trigger OOM
+        (0, 5, 1),  # warm-up:   5 users, ramp at 1/s
+        (30, 20, 2),  # ramp:     20 users, ramp at 2/s
+        (90, 20, 5),  # peak:     20 users, sustained allocation
+        (180, None, 0),  # stop
     ],
 }
 
@@ -58,6 +90,7 @@ class StagedLoadShape(LoadTestShape):
     Overrides --users / --spawn-rate CLI flags when present.
     demo_runner.py passes ATTACK_PROFILE via env= in Popen.
     """
+
     _profile_name = os.environ.get("ATTACK_PROFILE", "ddos")
     _stages = _PROFILES.get(_profile_name, _PROFILES["ddos"])
 
@@ -69,44 +102,78 @@ class StagedLoadShape(LoadTestShape):
                 if users is None:
                     return None  # signal Locust to stop
                 return (users, spawn_rate)
-        # Before first stage — should not happen but return stage 0 as fallback
+        # Before first stage — fallback to stage 0
         return (self._stages[0][1], self._stages[0][2])
 
 
+# ── User Classes ─────────────────────────────────────────────────────────────
+
+
 class NormalUser(HttpUser):
-    """User thông thường — weight cao hơn."""
+    """
+    Normal user thông thường — cho baseline và DDoS scenarios.
+
+    Hành vi:
+      - GET / (weight=3): Trang chủ chính
+      - GET /heavy (weight=1): Endpoint nặng, mô phỏng slow query
+      - GET /health (weight=1): Health check
+
+    Tags: baseline, ddos
+    """
+
     weight = 1
     wait_time = between(0.5, 1.5)
 
-    @tag("ddos", "baseline")
+    @tag("baseline", "ddos")
     @task(3)
     def index(self):
+        """Trang chủ — endpoint chính để test throughput."""
         self.client.get("/", name="GET /")
 
-    @tag("ddos", "baseline")
+    @tag("baseline", "ddos")
     @task(1)
     def heavy(self):
+        """Endpoint nặng — mô phỏng slow response để test latency."""
         self.client.get("/heavy", name="GET /heavy")
+
+    @tag("baseline")
+    @task(1)
+    def health(self):
+        """Health check — baseline profile only."""
+        self.client.get("/health", name="GET /health")
 
 
 class AttackUser(HttpUser):
-    """Simulated attacker — request liên tục không nghỉ."""
-    weight = 3
-    wait_time = between(0.05, 0.2)
+    """
+    Attacker — flood attack simulation cho DDoS scenarios.
 
-    @tag("ddos")
+    Hành vi:
+      - Rapid requests không có think time (wait 0.01-0.05s)
+      - Weight cao (3x normal user) để dominate traffic
+      - Target cả /, /heavy, /cpu endpoints
+
+    Tags: ddos, legi_attack
+    """
+
+    weight = 3
+    wait_time = between(0.01, 0.05)
+
+    @tag("ddos", "legi_attack")
     @task
     def flood_index(self):
+        """Flood trang chủ — primary attack vector."""
         self.client.get("/", name="[ATTACK] GET /")
 
-    @tag("ddos")
+    @tag("ddos", "legi_attack")
     @task
     def flood_heavy(self):
+        """Flood /heavy endpoint — amplify server load."""
         self.client.get("/heavy", name="[ATTACK] GET /heavy")
 
     @tag("ddos")
     @task
     def flood_cpu(self):
+        """Flood /cpu endpoint — CPU intensive attack."""
         self.client.get("/cpu", name="[ATTACK] GET /cpu")
 
 
@@ -114,37 +181,122 @@ _MEMORY_MB = int(os.environ.get("MEMORY_MB_PER_REQUEST", "20"))
 
 
 class MemoryStressUser(HttpUser):
-    """Scenario 4: Memory exhaustion — repeated /memory calls sustain container memory pressure."""
+    """
+    Memory stress user — exhaust container memory.
+
+    Hành vi:
+      - Continuous /memory calls với configurable size (default 20MB)
+      - Wait time ngắn (0.1-0.3s) để sustain pressure
+      - Container sẽ OOM và restart nếu memory limit thấp
+
+    Tags: memory
+
+    Target metrics:
+      - container_memory_usage_bytes
+      - container_restart_count
+    """
+
     weight = 2
     wait_time = between(0.1, 0.3)
 
     @tag("memory")
     @task
     def exhaust_memory(self):
+        """Allocate and hold memory — triggers OOM under sustained load."""
         self.client.get(f"/memory?mb={_MEMORY_MB}", name="[MEMORY] GET /memory")
 
 
-# ── Scenario usage ──────────────────────────────────────────────────────────
-# Staged shape is active whenever StagedLoadShape class is in the file.
-# demo_runner.py passes ATTACK_PROFILE=ddos or ATTACK_PROFILE=memory via env=.
-# Without ATTACK_PROFILE, defaults to "ddos" profile.
+class LegitimateUser(HttpUser):
+    """
+    Legitimate user — cho DDoS trade-off analysis.
+
+    Hành vi:
+      - Normal browsing pattern (wait 1-2s)
+      - Low weight (1) để represent real users
+      - Target endpoints: /, /health, /data
+
+    Tags: legi_attack
+
+    Dùng trong scenario 3 để đo:
+      - Legitimate user success rate under attack
+      - Collateral damage from rate limiting
+    """
+
+    weight = 1
+    wait_time = between(1, 2)
+
+    @tag("legi_attack")
+    @task
+    def visit_health(self):
+        """Legitimate: health check."""
+        self.client.get("/health", name="Legit: GET /health")
+
+    @tag("legi_attack")
+    @task
+    def visit_index(self):
+        """Legitimate: browse main page."""
+        self.client.get("/", name="Legit: GET /")
+
+    @tag("legi_attack")
+    @task
+    def visit_heavy(self):
+        """Legitimate: occasional slow request."""
+        self.client.get("/heavy", name="Legit: GET /heavy")
+
+
+# ── Event Listeners ───────────────────────────────────────────────────────────
 
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
+    """Log test configuration khi bắt đầu."""
     profile = os.environ.get("ATTACK_PROFILE", "ddos")
-    print("=" * 50)
-    print(f"AIOps Load Test starting — profile: {profile}")
-    print(f"Target: {environment.host}")
-    print("Grafana:      http://localhost:3000")
-    print("AlertManager: http://localhost:9093")
-    print("Agent logs:   http://localhost:8080/logs/ui")
-    print("=" * 50)
+    tags = (
+        environment.runner.host_tags
+        if hasattr(environment.runner, "host_tags")
+        else "N/A"
+    )
+
+    logger.info("=" * 60)
+    logger.info(f"AIOps Load Test starting")
+    logger.info(f"  Profile:    {profile}")
+    logger.info(f"  Target:     {environment.host}")
+    logger.info(f"  Tags:       {tags}")
+    logger.info(f"  Run time:   {environment.runner.target_user_count}s (if specified)")
+    logger.info("=" * 60)
+    print(f"[LOCUST] Test started — profile: {profile}, target: {environment.host}")
 
 
 @events.test_stop.add_listener
-def on_test_stop(**kwargs):
-    print("\n" + "=" * 50)
-    print("AIOps Load Test finished.")
-    print("Check agent log: http://localhost:8080/logs/ui")
-    print("=" * 50)
+def on_test_stop(environment, **kwargs):
+    """Log summary khi test kết thúc."""
+    stats = environment.stats
+    total_rps = stats.total.rps
+    total_failures = stats.total.fail_count
+    total_requests = stats.total.num_requests
+
+    logger.info("=" * 60)
+    logger.info("AIOps Load Test finished")
+    logger.info(f"  Total requests:  {total_requests}")
+    logger.info(f"  Total failures:  {total_failures}")
+    logger.info(f"  Average RPS:     {total_rps:.2f}")
+    logger.info(
+        f"  p50 latency:     {stats.total.get_response_time_percentile(0.5):.1f}ms"
+    )
+    logger.info(
+        f"  p95 latency:     {stats.total.get_response_time_percentile(0.95):.1f}ms"
+    )
+    logger.info(
+        f"  p99 latency:     {stats.total.get_response_time_percentile(0.99):.1f}ms"
+    )
+    logger.info("=" * 60)
+    print(
+        f"[LOCUST] Test completed — RPS: {total_rps:.1f}, p95: {stats.total.get_response_time_percentile(0.95):.0f}ms"
+    )
+
+
+@events.request.add_listener
+def on_request(request_type, name, response_time, response_length, exception, **kwargs):
+    """Log per-request events for debugging (optional)."""
+    if exception:
+        logger.warning(f"Request failed: {name} - {exception}")

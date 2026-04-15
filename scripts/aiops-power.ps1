@@ -1,20 +1,41 @@
-# AiOps Distributed Cluster Power Control Script
-# Provides start/stop/status actions for both the Azure VM and Local Docker containers.
-# Docker access to the Azure VM uses SSH tunnels (no TCP :2375 exposure).
+# AiOps 3-Node Azure Cluster Power Control Script
+# ==============================================================================
+# Controls all 3 Azure VMs (Control, Load Gen, App)
+# All infrastructure runs on Azure VMs - no local Docker required.
+#
+# Architecture:
+#   Node 1 (Control): 10.0.1.4 - Prometheus, AlertManager, Grafana, AI Agent, Pushgateway
+#   Node 2 (Load Gen): 10.0.1.5 - Locust, node-exporter, Pushgateway client
+#   Node 3 (App): 10.0.1.6 - target-app, node-exporter, cAdvisor
+#
+# Usage:
+#   .\aiops-power.ps1 start   - Start all 3 VMs and deploy infrastructure
+#   .\aiops-power.ps1 stop    - Stop containers and deallocate VMs
+#   .\aiops-power.ps1 status  - Check VM and service status
 
 param (
     [Parameter(Mandatory=$true, Position=0)]
     [ValidateSet("start", "stop", "status")]
-    $Action
+    $Action,
+    [ValidateSet("all", "control", "loadgen", "app")]
+    [string]$Target = "all"
 )
 
+$ErrorActionPreference = "Stop"
+
+# Fixed configuration for 3-node setup
 $RG = "rg-aiops"
-$APP_VM_NAME = "aiops-vm"
-$LOADGEN_VM_NAME = "aiops-loadgen-vm"
-$SSH_KEY = "~/.ssh/aiops_key"
+$SSH_KEY = Join-Path $PSScriptRoot "..\.ssh\aiops3_key_rsa"
 $SSH_USER = "azureuser"
-$REMOTE_PROJECT_DIR = "/home/azureuser/DoAn"
-$TUNNEL_STATE_FILE = "$env:TEMP\aiops-docker-tunnel.state"
+$REMOTE_PROJECT_DIR = "/home/azureuser/3rdY-Sem2"
+
+# VM Configuration (using existing VMs)
+$VMs = @{
+    "control"  = @{ Name = "aiops-vm";       IP = "10.0.1.4"; PublicIP = "104.215.158.157" }
+    "loadgen" = @{ Name = "aiops-loadgen-vm"; IP = "10.0.1.5"; PublicIP = "104.215.191.69" }
+    "app"     = @{ Name = "aiops-app";        IP = "10.0.1.6"; PublicIP = "4.194.57.3" }
+}
+
 $SSH_COMMON_ARGS = @(
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=accept-new",
@@ -23,62 +44,21 @@ $SSH_COMMON_ARGS = @(
     "-o", "ServerAliveCountMax=2"
 )
 
-# Fix: Ensure we are always pointing to the project root (one level up from /scripts)
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-Push-Location $ProjectRoot
-
-# IMPORTANT: Clear DOCKER_HOST to ensure we check LOCAL docker first
-$env:DOCKER_HOST = ""
-
-# Load and parse .env properly
-if (-not (Test-Path ".env")) { Write-Error "Could not find .env file in project root ($ProjectRoot)!"; exit }
-$envFile = Get-Content ".env"
-
-$azureAppIpLine = $envFile | Select-String "^AZURE_APP_IP="
-if ($null -eq $azureAppIpLine) { Write-Error "AZURE_APP_IP not found in .env"; exit }
-$global:azureAppIp = $azureAppIpLine.ToString().Split("=")[1].Trim()
-
-$azureLoadgenIpLine = $envFile | Select-String "^AZURE_LOADGEN_IP="
-if ($azureLoadgenIpLine) {
-    $global:azureLoadgenIp = $azureLoadgenIpLine.ToString().Split("=")[1].Trim()
+function Test-WebHealth {
+    param([string]$URL)
+    try {
+        $response = Invoke-WebRequest -Uri $URL -Method Head -TimeoutSec 3 -ErrorAction SilentlyContinue
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400)
+    } catch {
+        return $false
+    }
 }
 
-$rgLine = $envFile | Select-String "^AZURE_RESOURCE_GROUP="
-if ($rgLine) {
-    $RG = $rgLine.ToString().Split("=")[1].Trim()
-}
-
-$vmLine = $envFile | Select-String "^AZURE_VM_NAME="
-if ($vmLine) {
-    $APP_VM_NAME = $vmLine.ToString().Split("=")[1].Trim()
-}
-
-$loadgenVmLine = $envFile | Select-String "^AZURE_LOADGEN_VM_NAME="
-if ($loadgenVmLine) {
-    $LOADGEN_VM_NAME = $loadgenVmLine.ToString().Split("=")[1].Trim()
-}
-
-$sshUserLine = $envFile | Select-String "^AZURE_SSH_USER="
-if ($sshUserLine) {
-    $SSH_USER = $sshUserLine.ToString().Split("=")[1].Trim()
-}
-
-$sshKeyLine = $envFile | Select-String "^AZURE_SSH_KEY_PATH="
-if ($sshKeyLine) {
-    $SSH_KEY = $sshKeyLine.ToString().Split("=")[1].Trim()
-}
-
-if ([string]::IsNullOrWhiteSpace($global:azureAppIp) -or $global:azureAppIp -eq "127.0.0.1") {
-    Write-Warning "AZURE_APP_IP is empty or set to 127.0.0.1. Please update your .env file with the actual Application VM IP."
-}
-if ([string]::IsNullOrWhiteSpace($global:azureLoadgenIp)) {
-    Write-Warning "AZURE_LOADGEN_IP is empty. Please update your .env file with the actual Loadgen VM IP."
-}
-
-# Check if local Docker is running (Helper function)
-function Test-DockerRunning {
-    docker info >$null 2>&1
-    return ($LastExitCode -eq 0)
+function Test-SSHConnection {
+    param([string]$IP)
+    # Since SSH is often blocked, we use Test-NetConnection on the SSH port as a proxy
+    $result = Test-NetConnection -ComputerName $IP -Port 22 -InformationLevel Quiet -ErrorAction SilentlyContinue
+    return $result
 }
 
 function Get-SshKeyPath {
@@ -88,173 +68,189 @@ function Get-SshKeyPath {
     return $SSH_KEY
 }
 
-function Test-DockerTunnelRunning {
-    if (-not (Test-Path $TUNNEL_STATE_FILE)) {
-        return $false
-    }
+function Start-VM {
+    param([string]$Name, [string]$IP)
 
-    $tunnelProcessIdRaw = Get-Content $TUNNEL_STATE_FILE -ErrorAction SilentlyContinue
-    if (-not $tunnelProcessIdRaw) {
-        Remove-Item $TUNNEL_STATE_FILE -Force -ErrorAction SilentlyContinue
-        return $false
-    }
+    Write-Host "  Starting $Name ($IP)..." -ForegroundColor Cyan
+    az vm start -g $RG -n $Name --no-wait
 
-    $tunnelProcessId = 0
-    if (-not [int]::TryParse(($tunnelProcessIdRaw | Select-Object -First 1).Trim(), [ref]$tunnelProcessId)) {
-        Remove-Item $TUNNEL_STATE_FILE -Force -ErrorAction SilentlyContinue
-        return $false
-    }
-
-    $runningSshProc = Get-Process -Id $tunnelProcessId -ErrorAction SilentlyContinue
-    if (-not $runningSshProc -or $runningSshProc.ProcessName -ne "ssh") {
-        Remove-Item $TUNNEL_STATE_FILE -Force -ErrorAction SilentlyContinue
-        return $false
-    }
-
-    return $true
+    Write-Host "    Waiting for $Name to be running..." -ForegroundColor DarkGray
+    az vm wait -g $RG -n $Name --created 2>$null
+    Start-Sleep -Seconds 5
 }
 
-# Start an SSH tunnel for Docker socket forwarding
-function Start-DockerTunnel {
-    if (Test-DockerTunnelRunning) {
-        $activeTunnelState = Get-Content $TUNNEL_STATE_FILE
-        Write-Host "  SSH tunnel already active (process: $activeTunnelState)" -ForegroundColor DarkGray
-        return
-    }
+function Stop-VM {
+    param([string]$Name)
+
+    Write-Host "  Stopping $Name..." -ForegroundColor Yellow
+    az vm deallocate -g $RG -n $Name --no-wait
+}
+
+function Deploy-Node {
+    param(
+        [string]$IP,
+        [string]$ComposeFile,
+        [string]$NodeName
+    )
 
     $sshKeyPath = Get-SshKeyPath
-    if (-not (Test-Path $sshKeyPath)) {
-        Write-Error "SSH private key not found at '$sshKeyPath'."
-        exit 1
-    }
 
-    Write-Host "  Opening SSH tunnel for Docker socket to App VM..." -ForegroundColor Cyan
-    $portInUse = Get-NetTCPConnection -LocalPort 2375 -ErrorAction SilentlyContinue
-    if ($portInUse -and -not (Test-DockerTunnelRunning)) {
-        Write-Error "Local port 2375 is already in use by another process. Free the port or stop the other tunnel first."
-        exit 1
-    }
+    Write-Host "    Connecting to $NodeName ($IP)..." -ForegroundColor Cyan
 
-    $sshArgs = @()
-    $sshArgs += $SSH_COMMON_ARGS
-    $sshArgs += @("-o", "ExitOnForwardFailure=yes", "-i", $sshKeyPath, "-N", "-L", "2375:/var/run/docker.sock", "$SSH_USER@$global:azureAppIp")
-    $tunnelProcess = Start-Process -NoNewWindow -PassThru -FilePath ssh -ArgumentList $sshArgs
-    $tunnelProcess.Id | Out-File -FilePath $TUNNEL_STATE_FILE -Force
-    Start-Sleep -Seconds 2
+    $deployScript = @"
+set -e
+cd $REMOTE_PROJECT_DIR
 
-    if (-not (Test-DockerTunnelRunning)) {
-        Write-Error "SSH tunnel failed to start. Check SSH access and key permissions."
-        exit 1
-    }
+if [ ! -d ".git" ]; then
+    echo 'Repo not found, cloning...'
+    git clone https://github.com/nqt2512/3rdY-Sem2.git $REMOTE_PROJECT_DIR
+    cd $REMOTE_PROJECT_DIR
+else
+    echo 'Updating repo...'
+    cd $REMOTE_PROJECT_DIR
+    git pull
+fi
 
-    Write-Host "  SSH tunnel active (process: $($tunnelProcess.Id))" -ForegroundColor Green
+echo 'Building and starting containers...'
+docker compose -f $ComposeFile up -d --build
+
+echo 'Containers:'
+docker compose -f $ComposeFile ps
+"@
+
+    $escapedScript = $deployScript -replace '([$"`])', '`$1'
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" $escapedScript
 }
 
-# Stop the SSH tunnel
-function Stop-DockerTunnel {
-    if (Test-Path $TUNNEL_STATE_FILE) {
-        try {
-            $tunnelProcessIdRaw = Get-Content $TUNNEL_STATE_FILE -ErrorAction SilentlyContinue
-            $tunnelProcessId = 0
-            if ([int]::TryParse(($tunnelProcessIdRaw | Select-Object -First 1).Trim(), [ref]$tunnelProcessId)) {
-                $runningSshProc = Get-Process -Id $tunnelProcessId -ErrorAction SilentlyContinue
-                if ($runningSshProc -and $runningSshProc.ProcessName -eq "ssh") {
-                    Stop-Process -Id $tunnelProcessId -Force -ErrorAction SilentlyContinue
-                    Write-Host "  SSH tunnel stopped" -ForegroundColor Yellow
-                } else {
-                    Write-Host "  Tunnel PID file stale; no matching ssh process" -ForegroundColor DarkGray
-                }
-            } else {
-                Write-Host "  Tunnel PID file invalid; removing state file" -ForegroundColor DarkGray
-            }
-        } catch {
-            Write-Host "  SSH tunnel already stopped" -ForegroundColor DarkGray
-        }
-        Remove-Item $TUNNEL_STATE_FILE -Force
-    }
+function Stop-NodeContainers {
+    param([string]$IP, [string]$ComposeFile)
+
+    $sshKeyPath = Get-SshKeyPath
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "cd $REMOTE_PROJECT_DIR && docker compose -f $ComposeFile down" 2>$null
 }
 
 switch ($Action) {
     "start" {
-        $DockerReady = Test-DockerRunning
-        if (-not $DockerReady) {
-            Write-Warning "Docker Desktop is NOT running. The Local Control Plane and Remote Containers will NOT be started."
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " AIOps 3-Node Azure Cluster - START" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+
+        if ($Target -eq "all" -or $Target -eq "control") {
+            Write-Host "=== Starting Control Node (Node 1) ===" -ForegroundColor Cyan
+            Start-VM -Name $VMs["control"].Name -IP $VMs["control"].IP
         }
-        
-        Write-Host "Starting Azure VMs in RG ($RG)..." -ForegroundColor Cyan
-        foreach ($vm in @($APP_VM_NAME, $LOADGEN_VM_NAME)) {
-            Write-Host "  Starting $vm..." -ForegroundColor Cyan
-            az vm start -g $RG -n $vm --no-wait
+
+        if ($Target -eq "all" -or $Target -eq "loadgen") {
+            Write-Host "=== Starting Load Generator Node (Node 2) ===" -ForegroundColor Cyan
+            Start-VM -Name $VMs["loadgen"].Name -IP $VMs["loadgen"].IP
         }
-        Write-Host "Waiting for VMs to initialize..." -ForegroundColor DarkGray
-        az vm wait -g $RG -n $APP_VM_NAME --created
-        az vm wait -g $RG -n $LOADGEN_VM_NAME --created
-        Start-Sleep -Seconds 10 # Extra buffer for SSH
 
-        if ($DockerReady) {
-            $sshKeyPath = Get-SshKeyPath
-            
-            Write-Host "Deploying Application Plane -> $APP_VM_NAME ($global:azureAppIp)..." -ForegroundColor Cyan
-            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.app.yml up -d --build"
-
-            Write-Host "Deploying Loadgen/Observability Plane -> $LOADGEN_VM_NAME ($global:azureLoadgenIp)..." -ForegroundColor Cyan
-            ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.loadgen.yml up -d --build"
-
-            Write-Host "Generating dynamic prometheus.yml..." -ForegroundColor Cyan
-            (Get-Content ops\monitoring\prometheus\prometheus.yml.template) `
-                -replace '\$\{AZURE_APP_IP\}', $global:azureAppIp `
-                -replace '\$\{AZURE_LOADGEN_IP\}', $global:azureLoadgenIp `
-                | Set-Content ops\monitoring\prometheus\prometheus.yml
-
-            Start-DockerTunnel
-
-            Write-Host "Starting Control Plane (Local PC)..." -ForegroundColor Cyan
-            docker compose -f ops/infra/docker-compose.control.yml up -d --build
-
-            Write-Host "System fully started." -ForegroundColor Green
-            Write-Host "  App: http://$global:azureAppIp" -ForegroundColor DarkGray
-            Write-Host "  Grafana: http://$global:azureLoadgenIp:3000" -ForegroundColor DarkGray
-        } else {
-            Write-Host "Azure VMs are powering on. Please start Docker Desktop later and re-run this script to launch planes." -ForegroundColor Yellow
+        if ($Target -eq "all" -or $Target -eq "app") {
+            Write-Host "=== Starting App Node (Node 3) ===" -ForegroundColor Cyan
+            Start-VM -Name $VMs["app"].Name -IP $VMs["app"].IP
         }
+
+        Write-Host "`nWaiting for SSH to be ready..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds 15
+
+        if ($Target -eq "all" -or $Target -eq "control") {
+            Write-Host "`n=== Deploying Control Node ===" -ForegroundColor Cyan
+            Deploy-Node -IP $VMs["control"].IP -ComposeFile "ops/infra/docker-compose.control.yml" -NodeName "Control"
+        }
+
+        if ($Target -eq "all" -or $Target -eq "loadgen") {
+            Write-Host "`n=== Deploying Load Generator Node ===" -ForegroundColor Cyan
+            Deploy-Node -IP $VMs["loadgen"].IP -ComposeFile "ops/infra/docker-compose.loadgen.yml" -NodeName "Load Gen"
+        }
+
+        if ($Target -eq "all" -or $Target -eq "app") {
+            Write-Host "`n=== Deploying App Node ===" -ForegroundColor Cyan
+            Deploy-Node -IP $VMs["app"].IP -ComposeFile "ops/infra/docker-compose.app.yml" -NodeName "App"
+        }
+
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " All nodes deployed successfully!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Access URLs:" -ForegroundColor White
+        Write-Host "  Grafana:       http://$($VMs['control'].IP):3000" -ForegroundColor Yellow
+        Write-Host "  Prometheus:    http://$($VMs['control'].IP):9090" -ForegroundColor Yellow
+        Write-Host "  AlertManager:  http://$($VMs['control'].IP):9093" -ForegroundColor Yellow
+        Write-Host "  Pushgateway:   http://$($VMs['loadgen'].IP):9091" -ForegroundColor Yellow
+        Write-Host "  Target App:    http://$($VMs['app'].IP):80" -ForegroundColor Yellow
+        Write-Host "  cAdvisor:      http://$($VMs['app'].IP):8080" -ForegroundColor Yellow
     }
 
     "stop" {
-        if (Test-DockerRunning) {
-            Write-Host "Stopping Local Control Plane..." -ForegroundColor Yellow
-            docker compose -f ops/infra/docker-compose.control.yml down
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host " AIOps 3-Node Azure Cluster - STOP" -ForegroundColor Yellow
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host ""
+
+        if ($Target -eq "all" -or $Target -eq "control") {
+            Write-Host "=== Stopping containers on Control Node ===" -ForegroundColor Cyan
+            Stop-NodeContainers -IP $VMs["control"].IP -ComposeFile "ops/infra/docker-compose.control.yml"
         }
 
-        Stop-DockerTunnel
-
-        $sshKeyPath = Get-SshKeyPath
-        Write-Host "Stopping Remote Planes..." -ForegroundColor Yellow
-        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureAppIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.app.yml down" 2>$null
-        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$global:azureLoadgenIp" "cd $REMOTE_PROJECT_DIR && docker compose -f ops/infra/docker-compose.loadgen.yml down" 2>$null
-
-        Write-Host "Deallocating Azure VMs..." -ForegroundColor Yellow
-        foreach ($vm in @($APP_VM_NAME, $LOADGEN_VM_NAME)) {
-            az vm deallocate -g $RG -n $vm --no-wait
+        if ($Target -eq "all" -or $Target -eq "loadgen") {
+            Write-Host "=== Stopping containers on Load Generator Node ===" -ForegroundColor Cyan
+            Stop-NodeContainers -IP $VMs["loadgen"].IP -ComposeFile "ops/infra/docker-compose.loadgen.yml"
         }
-        Write-Host "System off and VMs deallocating." -ForegroundColor Green
+
+        if ($Target -eq "all" -or $Target -eq "app") {
+            Write-Host "=== Stopping containers on App Node ===" -ForegroundColor Cyan
+            Stop-NodeContainers -IP $VMs["app"].IP -ComposeFile "ops/infra/docker-compose.app.yml"
+        }
+
+        Write-Host "`n=== Deallocating VMs ===" -ForegroundColor Yellow
+        if ($Target -eq "all" -or $Target -eq "control") {
+            Stop-VM -Name $VMs["control"].Name
+        }
+        if ($Target -eq "all" -or $Target -eq "loadgen") {
+            Stop-VM -Name $VMs["loadgen"].Name
+        }
+        if ($Target -eq "all" -or $Target -eq "app") {
+            Stop-VM -Name $VMs["app"].Name
+        }
+
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " All nodes stopped and deallocated!" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
     }
 
     "status" {
-        Write-Host "Azure VM Power Status:" -ForegroundColor Cyan
-        az vm list -g $RG -d --query "[].{Name:name, State:powerState, IP:publicIps}" --output table
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host " AIOps 3-Node Azure Cluster - STATUS" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
 
-        Write-Host "`nLocal Docker Status:" -ForegroundColor Cyan
-        if (Test-DockerRunning) {
-            docker compose -f ops/infra/docker-compose.control.yml ps
-        } else {
-            Write-Host "  Docker Desktop not running" -ForegroundColor Yellow
-        }
+        Write-Host "Azure VM Status:" -ForegroundColor White
+        az vm list -g $RG -d --query "[].{Name:name, State:powerState, IP:publicIps}" --output table 2>$null
 
-        Write-Host "`nSSH Tunnel Status:" -ForegroundColor Cyan
-        if (Test-DockerTunnelRunning) {
-            Write-Host "  Active -> $APP_VM_NAME" -ForegroundColor Green
-        } else {
-            Write-Host "  Not running" -ForegroundColor DarkGray
-        }
+        Write-Host "`nService Endpoints (Public Health Checks):" -ForegroundColor White
+        
+        # Test Control (AI Agent)
+        $c_ip = $VMs['control'].PublicIP
+        $agent_ok = Test-WebHealth -URL "http://$($c_ip):8083/health"
+        $status = if ($agent_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
+        $color = if ($agent_ok) { "Green" } else { "Red" }
+        Write-Host "  Control Node (AI Agent)   $($c_ip.PadRight(15)) [$status]" -ForegroundColor $color
+
+        # Test App
+        $a_ip = $VMs['app'].PublicIP
+        $app_ok = Test-WebHealth -URL "http://$($a_ip):80/health"
+        $status = if ($app_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
+        $color = if ($app_ok) { "Green" } else { "Red" }
+        Write-Host "  App Node (Target App)     $($a_ip.PadRight(15)) [$status]" -ForegroundColor $color
+
+        # Test LoadGen (Node Exporter as proxy for being alive)
+        $l_ip = $VMs['loadgen'].PublicIP
+        $lg_ok = Test-WebHealth -URL "http://$($l_ip):9100"
+        $status = if ($lg_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
+        $color = if ($lg_ok) { "Green" } else { "Red" }
+        Write-Host "  LoadGen Node (Metrics)    $($l_ip.PadRight(15)) [$status]" -ForegroundColor $color
     }
 }

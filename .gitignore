@@ -11,6 +11,11 @@
 secrets/
 credentials/
 
+# ── SSH Keys ───────────────────────────────────────────────
+.ssh/
+*.key
+*.pub
+
 # ── Docker & Containers ──────────────────────────────────────
 # Docker volumes and data
 **/data/

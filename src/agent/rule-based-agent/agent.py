@@ -11,6 +11,7 @@ Endpoints:
 """
 
 import os
+import sys
 import time
 import logging
 from datetime import datetime, timezone
@@ -273,7 +274,8 @@ def logs():
 
 
 if __name__ == "__main__":
-    if not AGENT_API_KEY:
-        logger.warning("AGENT_API_KEY is not set - starting insecurely if not overridden!")
+    if not AGENT_API_KEY or AGENT_API_KEY == "your_secret_agent_key_here":
+        logger.critical("AGENT_API_KEY not set or using default value! Agent must be secured to start.")
+        sys.exit(1)
     logger.info("Rule-Based Agent starting on port 5001...")
     app.run(host="0.0.0.0", port=5001, threaded=True, debug=False)

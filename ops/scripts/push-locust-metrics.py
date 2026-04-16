@@ -92,7 +92,7 @@ class LocustMetricsPusher:
                     "Total failure count",
                 )
                 self._push_metric(
-                    "locustMedianResponseTime",
+                    "locust_median_response_time",
                     float(row.get("Median Response Time", 0)),
                     "gauge",
                     type_labels,

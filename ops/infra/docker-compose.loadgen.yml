@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════════════
+name: aiops
 # docker-compose.loadgen.yml - Node 2: Load Generator
 # ═══════════════════════════════════════════════════════════════════════════════════
 #
-# Services: node-exporter, Pushgateway
+# Services: node-exporter
 # VM: aiops-loadgen (D2ps_v5) | Private IP: 10.0.1.5
 #
 # NOTE: Locust chạy trên host (không trong container) để đạt hiệu năng tối đa.
@@ -18,8 +19,7 @@
 #   python scripts/push-locust-metrics.py --csv-dir results --pushgateway http://localhost:9091
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-volumes:
-  pushgateway-data:
+# ═══════════════════════════════════════════════════════════════════════════════════
 
 networks:
   loadgen-net:
@@ -49,17 +49,3 @@ services:
         limits:
           memory: 128M
           cpus: "0.2"
-
-  # ── PUSHGATEWAY (Collect Locust metrics) ───────────────────────────────────
-  pushgateway:
-    build:
-      context: ../monitoring/pushgateway
-      dockerfile: Dockerfile
-    container_name: pushgateway
-    ports:
-      - "9091:9091"
-    volumes:
-      - pushgateway-data:/data
-    networks:
-      - loadgen-net
-    restart: unless-stopped

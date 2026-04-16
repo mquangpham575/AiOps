@@ -1,5 +1,7 @@
-# AIOps Infrastructure Upgrade Plan
+# [OBSOLETE] AIOps Infrastructure Upgrade Plan
 ## Single-Node → PC + Azure VM Distributed Architecture
+
+> **This document is obsolete.** The current architecture uses 3 Azure VMs (Control, LoadGen, App) — not the PC + Azure VM hybrid described here. See `docs/topology.md` for the current topology.
 
 ---
 

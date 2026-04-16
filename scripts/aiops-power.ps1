@@ -83,7 +83,7 @@ function Start-VM {
     az vm start -g $RG -n $Name --no-wait
 
     Write-Host "    Waiting for $Name to be running..." -ForegroundColor DarkGray
-    az vm wait -g $RG -n $Name --created 2>$null
+    az vm wait -g $RG -n $Name --custom "instanceView.statuses[?code=='PowerState/running']" 2>$null
     Start-Sleep -Seconds 2
 }
 
@@ -148,7 +148,11 @@ function Stop-NodeContainers {
     param([string]$IP, [string]$ComposeFile)
 
     $sshKeyPath = Get-SshKeyPath
-    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "cd $REMOTE_PROJECT_DIR && sudo docker compose -f $ComposeFile down" 2>$null
+    try {
+        ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "cd $REMOTE_PROJECT_DIR && sudo docker compose -f $ComposeFile down" 2>$null
+    } catch {
+        Write-Host "    SSH unreachable (VM may already be stopped) — skipping container cleanup." -ForegroundColor DarkGray
+    }
 }
 
 switch ($Action) {
@@ -250,8 +254,8 @@ switch ($Action) {
         $vmData = az vm list -g $RG -d --query "[].{name:name, state:powerState}" --output json | ConvertFrom-Json
         
         $results = @()
-        $nodeKeys = @("control", "loadgen", "app")
-        
+        $nodeKeys = if ($Target -eq "all") { @("control", "loadgen", "app") } else { @($Target) }
+
         foreach ($key in $nodeKeys) {
             $vmConfig = $VMs[$key]
             $ip = $vmConfig.PublicIP

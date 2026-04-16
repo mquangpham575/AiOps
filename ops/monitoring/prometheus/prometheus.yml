@@ -15,7 +15,7 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ["localhost:9093"]
+        - targets: ["alertmanager:9093"]
 
 rule_files:
   - "alert.rules.yml"
@@ -28,21 +28,21 @@ scrape_configs:
 
   - job_name: "aiops-agent"
     static_configs:
-      - targets: ["10.0.1.4:8083"]
+      - targets: ["ai-agent:8080"]
     metrics_path: /metrics
 
   - job_name: "rule-based-agent"
     static_configs:
-      - targets: ["10.0.1.4:5001"]
+      - targets: ["rule-based-agent:5001"]
     metrics_path: /metrics
 
   - job_name: "pushgateway"
     static_configs:
-      - targets: ["10.0.1.4:9091"]
+      - targets: ["pushgateway:9091"]
 
   - job_name: "node-exporter-control"
     static_configs:
-      - targets: ["10.0.1.4:9100"]
+      - targets: ["node-exporter:9100"]
 
   # ── Load Generator Node (10.0.1.5) ───────────────────────────
   - job_name: "node-exporter-loadgen"

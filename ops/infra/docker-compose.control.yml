@@ -1,4 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════════════
+name: aiops
 # docker-compose.control.yml - Node 1: Control Plane
 # ═══════════════════════════════════════════════════════════════════════════════════
 #
@@ -16,6 +17,7 @@ networks:
 volumes:
   prometheus_data:
   grafana_data:
+  pushgateway_data:
 
 services:
   # ── PROMETHEUS ────────────────────────────────────────────────────────────
@@ -70,18 +72,19 @@ services:
   ai-agent:
     build: ../../src/agent/ai-agent
     container_name: ai-agent
+    user: root
     env_file:
       - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
       - ALERTMANAGER_URL=http://alertmanager:9093
-      - DOCKER_HOST=tcp://host.docker.internal:2375
+      - DOCKER_HOST=unix:///var/run/docker.sock
       - GRAFANA_URL=http://grafana:3000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEBUG_MODE=${DEBUG_MODE:-false}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8083:8080"
     networks:
@@ -100,15 +103,16 @@ services:
   rule-based-agent:
     build: ../../src/agent/rule-based-agent
     container_name: rule-based-agent
+    user: root
     env_file:
       - ../../.env
     environment:
       - TARGET_CONTAINER_NAME=target-app
       - PROMETHEUS_URL=http://prometheus:9090
       - ALERTMANAGER_URL=http://alertmanager:9093
-      - DOCKER_HOST=tcp://host.docker.internal:2375
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "5001:5001"
     networks:
@@ -154,10 +158,12 @@ services:
 
   # ── PUSHGATEWAY ────────────────────────────────────────────────────────────
   pushgateway:
-    image: prom/pushgateway:latest
+    build: ../monitoring/pushgateway
     container_name: pushgateway
     ports:
       - "9091:9091"
+    volumes:
+      - pushgateway_data:/data
     networks:
       - control-net
     restart: unless-stopped

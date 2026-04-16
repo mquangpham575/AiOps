@@ -19,19 +19,19 @@ receivers:
   - name: all-agents
     webhook_configs:
       # AI agent
-      - url: "http://agent:8080/webhook"
+      - url: "http://ai-agent:8080/webhook"
         send_resolved: true
         http_config:
           follow_redirects: true
-          authorization:
-            credentials: "agent_secret_key_nt531"
+          headers:
+            X-Agent-Key: "agent_secret_key_nt531"
       # Rule-based agent (baseline)
       - url: "http://rule-based-agent:5001/alert"
         send_resolved: true
         http_config:
           follow_redirects: true
-          authorization:
-            credentials: "agent_secret_key_nt531"
+          headers:
+            X-Agent-Key: "agent_secret_key_nt531"
 
 inhibit_rules:
   - source_match:

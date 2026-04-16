@@ -101,10 +101,14 @@ function Deploy-Node {
     # Ensure remote directory exists
     ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "sudo mkdir -p $REMOTE_PROJECT_DIR && sudo chown -R $($SSH_USER):$($SSH_USER) $($REMOTE_PROJECT_DIR)"
 
-    # Push local ops and src directories (the core of the project)
-    # Using -r for recursive copy
     $localProjRoot = (Get-Item "$PSScriptRoot\..").FullName
-    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\ops" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
+
+    # Synchronize only necessary config directories (skip heavy terraform binaries)
+    $remoteOpsDir = "$REMOTE_PROJECT_DIR/ops"
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "mkdir -p $remoteOpsDir/infra $remoteOpsDir/monitoring"
+    
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath "$localProjRoot\ops\infra\*.yml" "$($SSH_USER)@$($IP):$remoteOpsDir/infra/"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\ops\monitoring" "$($SSH_USER)@$($IP):$remoteOpsDir/"
     scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\src" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
     scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath "$localProjRoot\.env" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
 

@@ -2,6 +2,10 @@
 # .gitignore for AIOps NT531 Project
 # =============================================================
 
+# ── Deploy artifacts ─────────────────────────────────────────
+deploy.zip
+deploy.zip.b64
+
 # ── Environment & Secrets ────────────────────────────────────
 .env
 .env.local

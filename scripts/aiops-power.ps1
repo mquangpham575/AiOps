@@ -97,29 +97,35 @@ function Deploy-Node {
 
     Write-Host "    Connecting to $NodeName ($IP)..." -ForegroundColor Cyan
 
+    echo "Synchronizing local files to remote ($NodeName)..."
+    # Ensure remote directory exists
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "sudo mkdir -p $REMOTE_PROJECT_DIR && sudo chown -R $($SSH_USER):$($SSH_USER) $($REMOTE_PROJECT_DIR)"
+
+    # Push local ops and src directories (the core of the project)
+    # Using -r for recursive copy
+    $localProjRoot = (Get-Item "$PSScriptRoot\..").FullName
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\ops" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\src" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath "$localProjRoot\.env" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
+
+    $pathParts = $ComposeFile -split '[/\\\\]'
+    $remoteFile = $pathParts[-1]
+    $remoteDir = $pathParts[0..($pathParts.Length - 2)] -join '/'
+
     $deployScript = @"
 set -e
-mkdir -p $REMOTE_PROJECT_DIR
-cd $REMOTE_PROJECT_DIR
+cd "$REMOTE_PROJECT_DIR"
 
-if [ -d ".git" ]; then
-    echo 'Updating repo...'
-    git pull
-else
-    echo 'Cleaning up and cloning fresh...'
-    cd ..
-    sudo rm -rf $REMOTE_PROJECT_DIR
-    git clone https://github.com/mquangpham575/AiOps.git $REMOTE_PROJECT_DIR
-    cd $REMOTE_PROJECT_DIR
-fi
+echo "Cleaning up existing containers in $remoteDir..."
+cd "$remoteDir"
+sudo docker compose -p aiops down --remove-orphans || true
+sudo docker rm -f pushgateway prometheus grafana alertmanager ai-agent rule-based-agent node-exporter cadvisor target-app || true
 
-echo 'Building and starting containers...'
-cd `$(dirname $ComposeFile)
-sudo docker compose -f `$(basename $ComposeFile) up -d --build
+echo "Building and starting containers using $remoteFile..."
+sudo docker compose -p aiops -f "$remoteFile" up -d --build
 
-echo 'Containers:'
-sudo docker compose ps
-cd - > /dev/null
+echo "Containers status:"
+sudo docker compose -p aiops -f "$remoteFile" ps
 "@
 
     $b64Script = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($deployScript))

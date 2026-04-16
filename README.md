@@ -54,7 +54,7 @@ DoAn/
 │   └── aiops-power.ps1          # Azure VM power control
 ├── docs/                          # Documentation
 ├── results/                       # CSV and JSON outputs per scenario
-└── DEMO_GUIDE.md                  # Quick-start instructions
+└── demo-guide.md                  # Quick-start instructions
 ```
 
 ---
@@ -116,12 +116,14 @@ Access the following interfaces once the system is running:
 
 | Interface         | Address                         | Purpose                                        |
 | :---------------- | :------------------------------ | :--------------------------------------------- |
-| **Grafana**       | `http://104.215.191.69:3000`    | View Performance Dashboards                   |
-| **AI Action Log** | `http://104.215.158.157:8083/logs/ui` | Live view of AI reasoning and actions         |
-| **Prometheus**    | `http://104.215.158.157:9090`   | Inspect metric scrape targets                  |
-| **Target App**    | `http://4.194.57.3:80`          | Target for performance testing                 |
+| **Grafana**       | `http://<CONTROL_IP>:3000`      | View Performance Dashboards (Node 1)          |
+| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui` | Live view of AI reasoning and actions (Node 1)|
+| **Prometheus**    | `http://<CONTROL_IP>:9090`      | Inspect metric scrape targets (Node 1)         |
+| **Target App**    | `http://<APP_IP>:80`            | Target for performance testing (Node 3)        |
 
-Import dashboard: `ops/monitoring/grafana/dashboards/aiops_perf_eval.json`
+> Run `.\scripts\aiops-power.ps1 status` to get current public IPs.
+
+Dashboards are auto-provisioned from `ops/monitoring/grafana/dashboards/`.
 
 ---
 

@@ -1,7 +1,7 @@
 FROM prom/pushgateway:latest
 
-USER root
-RUN apk add --no-cache apache2-utils
+# USER root removed because base image is scratch/minimal
+# RUN apk add removed because apk is missing and not needed
 
 COPY pushgateway.ini /etc/pushgateway.ini
 

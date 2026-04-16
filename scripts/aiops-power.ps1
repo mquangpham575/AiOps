@@ -71,12 +71,20 @@ function Get-SshKeyPath {
 function Start-VM {
     param([string]$Name, [string]$IP)
 
-    Write-Host "  Starting $Name ($IP)..." -ForegroundColor Cyan
+    Write-Host "  Checking $Name ($IP)..." -ForegroundColor Cyan
+    $vmInfo = az vm show -d -g $RG -n $Name --query "powerState" -o tsv 2>$null
+    
+    if ($vmInfo -eq "VM running") {
+        Write-Host "    Already running. Skipping start." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "    Starting $Name..." -ForegroundColor Yellow
     az vm start -g $RG -n $Name --no-wait
 
     Write-Host "    Waiting for $Name to be running..." -ForegroundColor DarkGray
     az vm wait -g $RG -n $Name --created 2>$null
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 2
 }
 
 function Stop-VM {
@@ -236,35 +244,41 @@ switch ($Action) {
     }
 
     "status" {
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host " AIOps 3-Node Azure Cluster - STATUS" -ForegroundColor Cyan
-        Write-Host "========================================" -ForegroundColor Cyan
-        Write-Host ""
-
-        Write-Host "Azure VM Status:" -ForegroundColor White
-        az vm list -g $RG -d --query "[].{Name:name, State:powerState, IP:publicIps}" --output table 2>$null
-
-        Write-Host "`nService Endpoints (Public Health Checks):" -ForegroundColor White
+        Write-Host "`n=== AIOps Cluster Status ===" -ForegroundColor Cyan
         
-        # Test Control (AI Agent)
-        $c_ip = $VMs['control'].PublicIP
-        $agent_ok = Test-WebHealth -URL "http://$($c_ip):8083/health"
-        $status = if ($agent_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
-        $color = if ($agent_ok) { "Green" } else { "Red" }
-        Write-Host "  Control Node (AI Agent)   $($c_ip.PadRight(15)) [$status]" -ForegroundColor $color
-
-        # Test App
-        $a_ip = $VMs['app'].PublicIP
-        $app_ok = Test-WebHealth -URL "http://$($a_ip):80/health"
-        $status = if ($app_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
-        $color = if ($app_ok) { "Green" } else { "Red" }
-        Write-Host "  App Node (Target App)     $($a_ip.PadRight(15)) [$status]" -ForegroundColor $color
-
-        # Test LoadGen (Node Exporter as proxy for being alive)
-        $l_ip = $VMs['loadgen'].PublicIP
-        $lg_ok = Test-WebHealth -URL "http://$($l_ip):9100"
-        $status = if ($lg_ok) { "ONLINE" } else { "OFFLINE (Wait for startup or check NSG)" }
-        $color = if ($lg_ok) { "Green" } else { "Red" }
-        Write-Host "  LoadGen Node (Metrics)    $($l_ip.PadRight(15)) [$status]" -ForegroundColor $color
+        # Pre-fetch VM states
+        $vmData = az vm list -g $RG -d --query "[].{name:name, state:powerState}" --output json | ConvertFrom-Json
+        
+        $results = @()
+        $nodeKeys = @("control", "loadgen", "app")
+        
+        foreach ($key in $nodeKeys) {
+            $vmConfig = $VMs[$key]
+            $ip = $vmConfig.PublicIP
+            
+            # Find state
+            $match = $vmData | Where-Object { $_.name -eq $vmConfig.Name }
+            $stateTxt = if ($match) { $match.state -replace "VM ", "" } else { "Unknown" }
+            
+            # Health check
+            $url = switch ($key) {
+                "control" { "http://$($ip):8083/health" }
+                "app"     { "http://$($ip):80/health" }
+                "loadgen" { "http://$($ip):9100" }
+            }
+            
+            $isOnline = Test-WebHealth -URL $url
+            $healthStatus = if ($isOnline) { "ONLINE" } else { "OFFLINE" }
+            
+            $results += [PSCustomObject]@{
+                NODE      = $key.ToUpper()
+                STATE     = $stateTxt
+                IP        = $ip
+                HEALTH    = $healthStatus
+            }
+        }
+        
+        $results | Format-Table -AutoSize
+        Write-Host ""
     }
 }

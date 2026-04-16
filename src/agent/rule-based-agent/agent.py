@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # ── Flask ────────────────────────────────────────────────────
 app = Flask(__name__)
 try:
-    from prometheus_flask_exporter import PrometheusFlaskExporter
-    PrometheusFlaskExporter(app)
+    from prometheus_flask_exporter import PrometheusMetrics
+    PrometheusMetrics(app)
     logger.info("Prometheus metrics enabled")
 except Exception as e:
     logger.warning(f"Prometheus exporter skipped: {e}")

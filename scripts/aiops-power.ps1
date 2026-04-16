@@ -99,34 +99,38 @@ function Deploy-Node {
 
     $deployScript = @"
 set -e
+mkdir -p $REMOTE_PROJECT_DIR
 cd $REMOTE_PROJECT_DIR
 
-if [ ! -d ".git" ]; then
-    echo 'Repo not found, cloning...'
-    git clone https://github.com/nqt2512/3rdY-Sem2.git $REMOTE_PROJECT_DIR
-    cd $REMOTE_PROJECT_DIR
-else
+if [ -d ".git" ]; then
     echo 'Updating repo...'
-    cd $REMOTE_PROJECT_DIR
     git pull
+else
+    echo 'Cleaning up and cloning fresh...'
+    cd ..
+    sudo rm -rf $REMOTE_PROJECT_DIR
+    git clone https://github.com/mquangpham575/AiOps.git $REMOTE_PROJECT_DIR
+    cd $REMOTE_PROJECT_DIR
 fi
 
 echo 'Building and starting containers...'
-docker compose -f $ComposeFile up -d --build
+cd `$(dirname $ComposeFile)
+sudo docker compose -f `$(basename $ComposeFile) up -d --build
 
 echo 'Containers:'
-docker compose -f $ComposeFile ps
+sudo docker compose ps
+cd - > /dev/null
 "@
 
-    $escapedScript = $deployScript -replace '([$"`])', '`$1'
-    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" $escapedScript
+    $b64Script = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($deployScript))
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "echo $b64Script | base64 -d | sudo bash"
 }
 
 function Stop-NodeContainers {
     param([string]$IP, [string]$ComposeFile)
 
     $sshKeyPath = Get-SshKeyPath
-    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "cd $REMOTE_PROJECT_DIR && docker compose -f $ComposeFile down" 2>$null
+    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "cd $REMOTE_PROJECT_DIR && sudo docker compose -f $ComposeFile down" 2>$null
 }
 
 switch ($Action) {
@@ -138,17 +142,17 @@ switch ($Action) {
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "=== Starting Control Node (Node 1) ===" -ForegroundColor Cyan
-            Start-VM -Name $VMs["control"].Name -IP $VMs["control"].IP
+            Start-VM -Name $VMs["control"].Name -IP $VMs["control"].PublicIP
         }
 
         if ($Target -eq "all" -or $Target -eq "loadgen") {
             Write-Host "=== Starting Load Generator Node (Node 2) ===" -ForegroundColor Cyan
-            Start-VM -Name $VMs["loadgen"].Name -IP $VMs["loadgen"].IP
+            Start-VM -Name $VMs["loadgen"].Name -IP $VMs["loadgen"].PublicIP
         }
 
         if ($Target -eq "all" -or $Target -eq "app") {
             Write-Host "=== Starting App Node (Node 3) ===" -ForegroundColor Cyan
-            Start-VM -Name $VMs["app"].Name -IP $VMs["app"].IP
+            Start-VM -Name $VMs["app"].Name -IP $VMs["app"].PublicIP
         }
 
         Write-Host "`nWaiting for SSH to be ready..." -ForegroundColor DarkGray
@@ -156,17 +160,17 @@ switch ($Action) {
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "`n=== Deploying Control Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["control"].IP -ComposeFile "ops/infra/docker-compose.control.yml" -NodeName "Control"
+            Deploy-Node -IP $VMs["control"].PublicIP -ComposeFile "ops/infra/docker-compose.control.yml" -NodeName "Control"
         }
 
         if ($Target -eq "all" -or $Target -eq "loadgen") {
             Write-Host "`n=== Deploying Load Generator Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["loadgen"].IP -ComposeFile "ops/infra/docker-compose.loadgen.yml" -NodeName "Load Gen"
+            Deploy-Node -IP $VMs["loadgen"].PublicIP -ComposeFile "ops/infra/docker-compose.loadgen.yml" -NodeName "Load Gen"
         }
 
         if ($Target -eq "all" -or $Target -eq "app") {
             Write-Host "`n=== Deploying App Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["app"].IP -ComposeFile "ops/infra/docker-compose.app.yml" -NodeName "App"
+            Deploy-Node -IP $VMs["app"].PublicIP -ComposeFile "ops/infra/docker-compose.app.yml" -NodeName "App"
         }
 
         Write-Host ""
@@ -175,12 +179,12 @@ switch ($Action) {
         Write-Host "========================================" -ForegroundColor Green
         Write-Host ""
         Write-Host "Access URLs:" -ForegroundColor White
-        Write-Host "  Grafana:       http://$($VMs['control'].IP):3000" -ForegroundColor Yellow
-        Write-Host "  Prometheus:    http://$($VMs['control'].IP):9090" -ForegroundColor Yellow
-        Write-Host "  AlertManager:  http://$($VMs['control'].IP):9093" -ForegroundColor Yellow
-        Write-Host "  Pushgateway:   http://$($VMs['loadgen'].IP):9091" -ForegroundColor Yellow
-        Write-Host "  Target App:    http://$($VMs['app'].IP):80" -ForegroundColor Yellow
-        Write-Host "  cAdvisor:      http://$($VMs['app'].IP):8080" -ForegroundColor Yellow
+        Write-Host "  Grafana:       http://$($VMs['control'].PublicIP):3000" -ForegroundColor Yellow
+        Write-Host "  AI Agent:      http://$($VMs['control'].PublicIP):8083/logs/ui" -ForegroundColor Yellow
+        Write-Host "  Prometheus:    http://$($VMs['control'].PublicIP):9090" -ForegroundColor Yellow
+        Write-Host "  Pushgateway:   http://$($VMs['control'].PublicIP):9091" -ForegroundColor Yellow
+        Write-Host "  Target App:    http://$($VMs['app'].PublicIP):80/health" -ForegroundColor Yellow
+        Write-Host "  cAdvisor:      http://$($VMs['app'].PublicIP):8080" -ForegroundColor Yellow
     }
 
     "stop" {
@@ -191,17 +195,17 @@ switch ($Action) {
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "=== Stopping containers on Control Node ===" -ForegroundColor Cyan
-            Stop-NodeContainers -IP $VMs["control"].IP -ComposeFile "ops/infra/docker-compose.control.yml"
+            Stop-NodeContainers -IP $VMs["control"].PublicIP -ComposeFile "ops/infra/docker-compose.control.yml"
         }
 
         if ($Target -eq "all" -or $Target -eq "loadgen") {
             Write-Host "=== Stopping containers on Load Generator Node ===" -ForegroundColor Cyan
-            Stop-NodeContainers -IP $VMs["loadgen"].IP -ComposeFile "ops/infra/docker-compose.loadgen.yml"
+            Stop-NodeContainers -IP $VMs["loadgen"].PublicIP -ComposeFile "ops/infra/docker-compose.loadgen.yml"
         }
 
         if ($Target -eq "all" -or $Target -eq "app") {
             Write-Host "=== Stopping containers on App Node ===" -ForegroundColor Cyan
-            Stop-NodeContainers -IP $VMs["app"].IP -ComposeFile "ops/infra/docker-compose.app.yml"
+            Stop-NodeContainers -IP $VMs["app"].PublicIP -ComposeFile "ops/infra/docker-compose.app.yml"
         }
 
         Write-Host "`n=== Deallocating VMs ===" -ForegroundColor Yellow

@@ -35,7 +35,7 @@ from google.genai import types as genai_types  # GenerateContentConfig, etc.
 
 from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
 import requests as _requests  # aliased to avoid collision with tools.requests
-from prometheus_client import Gauge
+from prometheus_client import Gauge, Counter
 
 # ── Logging setup ────────────────────────────────────────────
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -65,21 +65,57 @@ except Exception as e:
     logger.warning(f"Prometheus exporter skipped: {e}")
     # Fallback: tạo /metrics endpoint đơn giản
     from flask import Response
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     @app.route("/metrics")
     def metrics():
-        return Response("# AI Agent metrics (fallback)\n", mimetype="text/plain")
+        # Expose internal agent metrics for Prometheus scraping (fallback mode).
+        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 # ── MTTR Prometheus gauges ──────────────────────────────────
+# AGENT_RESPONSE_LATENCY: Thời gian suy luận của AI (từ khi nhận webhook đến khi ra quyết định)
 AGENT_RESPONSE_LATENCY = Gauge(
     "agent_response_latency_seconds",
-    "Time from webhook received to action taken",
+    "Time from webhook received to action taken (AI reasoning time)",
     ["agent_type"],
 )
+# AGENT_MTTR: Thời gian từ khi Alert bắt đầu đến khi hồi phục (Scientific MTTR)
+# Chúng tôi map labels(agent_type='ai') vào đây để dashboard hiển thị giá trị tốt nhất.
 AGENT_MTTR = Gauge(
     "agent_mttr_seconds",
-    "End-to-end incident response time (alert startsAt to action taken)",
+    "End-to-end incident response time (alert startsAt to recovery detected)",
     ["agent_type"],
 )
+# AGENT_MTTA: Mean Time To Action (Legacy MTTR - alert startsAt đến khi thực thi tool)
+AGENT_MTTA = Gauge(
+    "agent_mtta_seconds",
+    "Time from alert startsAt to first remediation action taken",
+    ["agent_type"],
+)
+
+# AGENT_REMEDIATION_COUNT: Theo dõi số lượng hành động remediation (success/failure/resolved)
+AGENT_REMEDIATION_COUNT = Counter(
+    "agent_remediation_count_total",
+    "Total count of remediation actions taken by the agent",
+    ["agent_type", "status"],
+)
+
+# AGENT_CONFIDENCE: Độ tự tin của AI trong quyết định gần nhất
+AGENT_CONFIDENCE = Gauge(
+    "agent_confidence_score",
+    "Latest AI confidence score for decision making",
+    ["agent_type"],
+)
+
+# Khởi tạo giá trị 0 cho các labels thông dụng để Prometheus scrape được ngay từ đầu
+# Tránh tình trạng "No Data" trên dashboard.
+AGENT_RESPONSE_LATENCY.labels(agent_type="ai").set(0)
+AGENT_MTTR.labels(agent_type="ai").set(0)
+AGENT_MTTA.labels(agent_type="ai").set(0)
+AGENT_CONFIDENCE.labels(agent_type="ai").set(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="success").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="resolved").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="monitoring").inc(0)
 
 # ── Gemini setup ─────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -104,19 +140,29 @@ logger.info("API Key authentication enabled for /webhook and /logs")
 
 
 def require_api_key(f):
+    # Decorator to enforce API key authentication for protected endpoints.
     """Decorator to require X-Agent-Key header for access."""
     @functools.wraps(f)
     def decorated(*args, **kwargs):
-        provided = request.headers.get("X-Agent-Key", "")
-        # Also support Authorization: Bearer <key> (common in AlertManager/webhooks)
-        auth_header = request.headers.get("Authorization", "")
-        if not provided and auth_header.startswith("Bearer "):
-            provided = auth_header.split(" ")[-1]
+        # Independently collect all possible keys
+        header_key = request.headers.get("X-Agent-Key")
         
-        # Secure comparison to prevent timing attacks
-        if not hmac.compare_digest(provided, AGENT_API_KEY):
-            logger.warning(f"Unauthorized access attempt from {repr(request.remote_addr)}")
+        auth_header = request.headers.get("Authorization", "")
+        bearer_key = auth_header.split(" ")[-1] if auth_header.startswith("Bearer ") else None
+        
+        query_key = request.args.get("api_key")
+
+        # Check if ANY source contains a valid key
+        is_authorized = False
+        for provided in [header_key, bearer_key, query_key]:
+            if provided and hmac.compare_digest(provided, AGENT_API_KEY):
+                is_authorized = True
+                break
+        
+        if not is_authorized:
+            logger.warning(f"Unauthorized access attempt from {repr(request.remote_addr)} | Header: {bool(header_key)} | Bearer: {bool(bearer_key)} | Query: {bool(query_key)}")
             return jsonify({"error": "Unauthorized"}), 401
+        
         return f(*args, **kwargs)
     return decorated
 
@@ -159,8 +205,17 @@ _ALERT_SCENARIO_MAP = {
     "CriticalSystemLoad": "system_load",
 }
 
+# ── Recovery Thresholds (used for scientific MTTR) ───────────
+_RECOVERY_THRESHOLDS = {
+    "cpu_stress":    {"container_cpu": 30.0},  # Wait until CPU < 30%
+    "ddos":          {"latency_ms": 300.0},    # Wait until latency < 300ms
+    "memory_stress": {"memory_pct": 60.0},     # Wait until memory < 60%
+    "system_load":   {"load1": 1.5},           # Wait until load < 1.5
+}
+
 
 def _prom_query(query: str) -> float | str:
+    # Execute an instant query against the Prometheus API and return the numeric result.
     """Run a single Prometheus instant query. Returns float or 'N/A' on any failure."""
     try:
         resp = _requests.get(
@@ -177,6 +232,7 @@ def _prom_query(query: str) -> float | str:
 
 
 def enrich_alert_context(alert: dict) -> dict:
+    # Fetch real-time system metrics from Prometheus to provide context for the AI agent.
     """
     Phase 1: Query Prometheus for live metrics relevant to this alert's scenario.
     Returns a flat dict of metric values (floats or 'N/A' on timeout).
@@ -259,6 +315,7 @@ CRITICAL: "action" field must contain ONLY the tool name, parameters go in "para
 
 
 def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
+    # Interface with the Gemini API to obtain a structured remediation decision.
     """
     Gọi Gemini API với throttle 3s.
     Trả về (decision_dict, latency_seconds).
@@ -362,6 +419,7 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
 
 
 def build_prompt(alert: dict, context: dict | None = None) -> str:
+    # Construct a detailed instructional prompt for the LLM based on alert data and live metrics.
     """Build the user-facing prompt for Gemini, enriched with live metrics.
 
     Args:
@@ -390,13 +448,78 @@ Summary    : {summary}
 Details    : {description}
 {metrics_section}
 Analyze the metrics above and choose the single best remediation action.
-Respond ONLY with valid JSON matching the schema: {{reasoning, action, params, confidence}}
+Respond ONLY with valid JSON matching the schema: {{reasoning, action, params, confidence}}.
+Note: 'confidence' must be a number between 0 and 100 representing your percentage of certainty.
 """
+
+
+def _poll_recovery(log_id: str, scenario: str, start_time: datetime):
+    # Background thread to poll Prometheus until system recovery is detected for accurate MTTR.
+    """
+    Polls Prometheus every 5s for up to 5 minutes.
+    When recovery thresholds are met, updates the action log entry and Prometheus gauges.
+    """
+    timeout_s = 300
+    poll_interval = 5
+    elapsed = 0
+    
+    thresholds = _RECOVERY_THRESHOLDS.get(scenario, {})
+    if not thresholds:
+        return
+
+    logger.info(f"[metrics] MTTR tracking started for {log_id} ({scenario})")
+
+    while elapsed < timeout_s:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        
+        # Build context (query live metrics)
+        try:
+            # We mock an alert dict for enrich_alert_context
+            ctx = enrich_alert_context({"labels": {"scenario": scenario}})
+            
+            is_recovered = True
+            for metric, threshold in thresholds.items():
+                val = ctx.get(metric)
+                
+                # Handle missing keys or "N/A" values from Prometheus
+                if val is None or val == "N/A":
+                    # If we can't get the metric, we can't confirm recovery
+                    is_recovered = False
+                    break
+                
+                # Check threshold (only if val is numeric)
+                if float(val) > threshold:
+                    is_recovered = False
+                    break
+            
+            if is_recovered:
+                recovery_time = datetime.now(timezone.utc)
+                mttr_s = round((recovery_time - start_time).total_seconds(), 1)
+                
+                # Update action log entry
+                for entry in action_log:
+                    if entry.get("id") == log_id:
+                        entry["mttr_actual_s"] = mttr_s
+                        entry["recovered_at"] = recovery_time.isoformat()
+                        break
+                
+                # Update Prometheus Metric
+                # Update Prometheus Metric with high priority 'ai' label for dashboard headline
+                AGENT_MTTR.labels(agent_type="ai").set(mttr_s)
+                logger.info(f"[metrics] RECOVERY DETECTED for {log_id}. MTTR: {mttr_s}s")
+                return
+
+        except Exception as e:
+            logger.warning(f"[metrics] Error in recovery polling: {e}")
+
+    logger.warning(f"[metrics] MTTR tracking timed out for {log_id} after {timeout_s}s")
 
 
 @app.route("/webhook", methods=["POST"])
 @require_api_key
 def webhook():
+    # Handle incoming alert webhooks from AlertManager and orchestrate the remediation workflow.
     """
     Endpoint nhận webhook từ AlertManager.
     Xử lý từng alert, gọi Gemini, thực thi tool.
@@ -429,10 +552,12 @@ def webhook():
 
         logger.info(f"--- Xử lý: {alert_name} [{scenario}] [{status}] ---")
         webhook_received_at = datetime.now(timezone.utc).isoformat()
+        log_id = f"{int(time.time())}-{alert_name[:10]}"
 
         # Bỏ qua alert đã resolve (chỉ log)
         if status == "resolved":
             entry = {
+                "id": log_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "webhook_received_at": webhook_received_at,
                 "alert": alert_name,
@@ -446,6 +571,7 @@ def webhook():
                 "llm_latency_s": 0,
             }
             action_log.append(entry)
+            AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="resolved").inc()
             results.append(entry)
             continue
 
@@ -490,6 +616,7 @@ def webhook():
                     logger.warning(f"Dropping unsupported params for {action}: {dropped}")
                 params = {k: v for k, v in params.items() if k in accepted}
 
+        AGENT_CONFIDENCE.labels(agent_type="ai").set(confidence)
         logger.info(f"AI reasoning: {reasoning}")
         logger.info(f"Action: {action} | Params: {params} | Confidence: {confidence}")
 
@@ -506,23 +633,41 @@ def webhook():
                 )
                 post_grafana_annotation(annotation_text, tags=["aiops", "auto-remediation", scenario])
                 exec_time = time.time() - t0
+                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="success").inc()
                 logger.info(f"Tool result ({exec_time:.2f}s): {tool_result[:200]}...")
             except TypeError as e:
                 exec_time = time.time() - t0
                 tool_result = f"Parameter error: {e}"
+                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
                 logger.error(f"Tool {action} parameter error: {e}")
             except Exception as e:
                 exec_time = time.time() - t0
                 tool_result = f"Tool execution error: {e}"
+                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
                 logger.error(f"Tool {action} execution error: {e}")
         elif action:
             tool_result = f"Unknown tool: {action}"
             logger.warning(tool_result)
         else:
             logger.info("No action required for this alert")
+            AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="monitoring").inc()
             tool_result = "No action taken"
 
-        # ── Record MTTR metrics ──────────────────────────────────
+        # ── Start Scientific MTTR tracking ──────────────────────
+        if action and action in TOOLS:
+            try:
+                starts_at_raw = alert.get("startsAt", "")
+                if starts_at_raw:
+                    t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
+                    threading.Thread(
+                        target=_poll_recovery,
+                        args=(log_id, scenario, t_start),
+                        daemon=True
+                    ).start()
+            except Exception as e:
+                logger.error(f"[metrics] Failed to span MTTR thread: {e}")
+
+        # ── Record immediate response metrics ─────────────────────
         action_taken_at = datetime.now(timezone.utc)
         # Response latency: action_taken_at − webhook_received_at
         try:
@@ -538,7 +683,8 @@ def webhook():
             if starts_at_raw:
                 t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
                 mttr = (action_taken_at - t_start).total_seconds()
-                AGENT_MTTR.labels(agent_type="ai").set(mttr)
+                # AGENT_MTTA: alert startsAt to action taken (baseline/legacy MTTR)
+                AGENT_MTTA.labels(agent_type="ai").set(mttr)
             else:
                 mttr = None
         except Exception:
@@ -546,6 +692,7 @@ def webhook():
 
         # Ghi vào action log
         entry = {
+            "id": log_id,
             "timestamp": action_taken_at.isoformat(),
             "webhook_received_at": webhook_received_at,
             "alert": alert_name,
@@ -559,7 +706,8 @@ def webhook():
             "result": tool_result,
             "llm_latency_s": round(llm_latency, 3),
             "response_latency_s": round(response_latency, 3) if response_latency is not None else None,
-            "mttr_s": round(mttr, 3) if mttr is not None else None,
+            "mttr_s": round(mttr, 3) if mttr is not None else None,  # Legacy MTTR
+            "mttr_actual_s": None,  # To be filled by background thread
         }
         action_log.append(entry)
 
@@ -570,6 +718,7 @@ def webhook():
 
 @app.route("/health")
 def health():
+    # Provide a simple health status check for the AI agent service.
     return jsonify({
         "status": "ok",
         "gemini_configured": bool(GEMINI_API_KEY),
@@ -580,6 +729,7 @@ def health():
 @app.route("/logs")
 @require_api_key
 def logs():
+    # Retrieve the recent history of AI actions in JSON format.
     """Trả về 50 action gần nhất — dùng để xem trong video demo."""
     try:
         limit = min(int(request.args.get("limit", 50)), 100)
@@ -590,6 +740,7 @@ def logs():
 
 @app.route("/logs/ui")
 def logs_ui():
+    # Render an interactive HTML dashboard for live monitoring of AI reasoning and actions.
     """Live HTML table of the 50 most recent AI actions — for screen recording."""
     try:
         limit = min(int(request.args.get("limit", 50)), 100)
@@ -600,29 +751,20 @@ def logs_ui():
     rows = ""
     for e in reversed(entries):
         raw_ts  = e.get("timestamp", "")
-        raw_recv = e.get("webhook_received_at", "")
-        ts_display = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts  # HH:MM:SS only
+        ts_display = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
 
-        # ── MTTR ─────────────────────────────────────────────────
-        mttr_s = None
-        try:
-            if raw_ts and raw_recv:
-                t_recv = datetime.fromisoformat(raw_recv.replace("Z", "+00:00"))
-                t_done = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-                mttr_s = round((t_done - t_recv).total_seconds(), 1)
-        except Exception:
-            pass
-
-        if mttr_s is None:
-            mttr_cell = '<span style="color:#6c757d">—</span>'
-        elif mttr_s < 10:
-            mttr_cell = f'<span style="color:#3fb950;font-weight:bold">{mttr_s}s</span>'
-        elif mttr_s < 30:
-            mttr_cell = f'<span style="color:#d29922">{mttr_s}s</span>'
+        # ── MTTR logic ──────────────────────────────────────────
+        mttr_legacy = e.get("mttr_s")
+        mttr_actual = e.get("mttr_actual_s")
+        
+        if mttr_actual:
+            mttr_cell = f'<div style="color:#3fb950;font-weight:bold" title="Recovery detected">{mttr_actual}s</div><div style="font-size:0.7em;color:#6e7681">recovery</div>'
+        elif mttr_legacy:
+            mttr_cell = f'<div style="color:#d29922" title="Action time">{mttr_legacy}s</div><div style="font-size:0.7em;color:#6e7681">to action</div>'
         else:
-            mttr_cell = f'<span style="color:#f85149">{mttr_s}s</span>'
+            mttr_cell = '<span style="color:#21262d">—</span>'
 
-        # ── Core fields ───────────────────────────────────────────
+        # ── Core fields ──────────────────────────────────────────
         alert_name = e.get("alert", "Unknown")
         scenario   = e.get("scenario", "")
         status     = e.get("status", "firing")
@@ -634,145 +776,118 @@ def logs_ui():
         result_raw = str(e.get("result") or "")
         ctx        = e.get("context") or {}
 
-        # ── Row category ─────────────────────────────────────────
-        # resolved   → dim row
-        # action taken → normal
-        # no action (LLM said null) → soft orange tint
-        # throttled (LLM latency == 0 and firing) → soft purple tint
         is_resolved   = (status == "resolved")
-        is_throttled  = (status == "firing" and llm_lat_s == 0 and not action)
-        is_no_action  = (status == "firing" and llm_lat_s > 0 and not action)
         is_error      = action and ("ERROR" in result_raw or "error" in result_raw.lower())
+        
+        row_class = "resolved" if is_resolved else ("error" if is_error else ("no-action" if not action else "active"))
 
-        if is_resolved:
-            row_style = "opacity:0.45"
-        elif is_throttled:
-            row_style = "background:rgba(130,80,255,0.07)"
-        elif is_no_action:
-            row_style = "background:rgba(210,153,34,0.07)"
-        elif is_error:
-            row_style = "background:rgba(248,81,73,0.07)"
-        else:
-            row_style = "background:rgba(63,185,80,0.05)"
-
-        # ── Alert + Scenario cell ─────────────────────────────────
-        scenario_colors = {
-            "cpu_stress":    "#e3b341",
-            "ddos":          "#f85149",
-            "memory_stress": "#d2a8ff",
-            "system_load":   "#79c0ff",
-            "overhead":      "#6e7681",
-        }
+        # ── Formatting ───────────────────────────────────────────
+        scenario_colors = {"cpu_stress": "#e3b341", "ddos": "#f85149", "memory_stress": "#d2a8ff", "system_load": "#79c0ff"}
         sc_color = scenario_colors.get(scenario, "#8b949e")
-        status_badge_color = "#3fb950" if is_resolved else "#f85149"
-        status_label       = "RESOLVED" if is_resolved else "FIRING"
 
-        alert_cell = (
-            f'<strong style="color:#e6edf3">{alert_name}</strong><br>'
-            f'<span style="color:{sc_color};font-size:0.78em">&#9632; {scenario}</span>'
-            f'&nbsp;<span style="color:{status_badge_color};font-size:0.72em;border:1px solid {status_badge_color};'
-            f'padding:1px 4px;border-radius:3px">{status_label}</span>'
-        )
-
-        # ── Live Metrics cell ────────────────────────────────────
-        if ctx:
-            metric_lines = "".join(
-                f'<div><span style="color:#8b949e">{k}:</span> '
-                f'<span style="color:#e6edf3">{v}</span></div>'
-                for k, v in ctx.items()
-            )
-            metrics_cell = f'<div style="font-size:0.80em;line-height:1.6">{metric_lines}</div>'
-        elif is_resolved:
-            metrics_cell = '<span style="color:#6c757d;font-size:0.80em">alert resolved</span>'
-        elif is_throttled:
-            metrics_cell = '<span style="color:#8957e5;font-size:0.80em">⏸ throttled / no LLM call</span>'
-        else:
-            metrics_cell = '<span style="color:#6c757d;font-size:0.80em">—</span>'
-
-        # ── Decision cell (action + params + reasoning) ───────────
+        metric_html = "".join(f'<span>{k}:<b>{v}</b></span>' for k, v in ctx.items())
+        
+        decision_html = ""
         if is_resolved:
-            decision_cell = '<span style="color:#3fb950;font-size:0.85em">✔ self-resolved</span>'
-        elif is_throttled:
-            decision_cell = '<span style="color:#8957e5;font-size:0.85em">⏸ skipped (throttle / dup)</span>'
+            decision_html = '<span class="badge success">ALREADY RESOLVED</span>'
         elif not action:
-            short_reason  = reasoning[:120] + ("…" if len(reasoning) > 120 else "")
-            decision_cell = (
-                f'<span style="color:#d29922;font-size:0.85em">— no action</span><br>'
-                f'<span style="color:#6c757d;font-size:0.78em" title="{reasoning}">{short_reason}</span>'
-            )
+            decision_html = f'<span class="badge warning">MONITORING</span><p>{reasoning[:120]}...</p>'
         else:
-            params_str = (
-                "(" + ", ".join(f'{k}=<em>{v}</em>' for k, v in params.items()) + ")"
-                if params else "()"
-            )
-            short_reason = reasoning[:130] + ("…" if len(reasoning) > 130 else "")
-            decision_cell = (
-                f'<code style="color:#79c0ff">{action}</code>'
-                f'<span style="color:#6e7681;font-size:0.80em">{params_str}</span><br>'
-                f'<span style="color:#8b949e;font-size:0.78em" title="{reasoning}">💬 {short_reason}</span>'
-            )
+            params_str = ", ".join(f"{k}={v}" for k, v in params.items())
+            decision_html = f'<code>{action}({params_str})</code><p>{reasoning[:130]}...</p>'
 
-        # ── Confidence + LLM latency cell ─────────────────────────
-        if confidence is not None and llm_lat_s > 0:
-            if confidence >= 0.8:
-                conf_color = "#3fb950"
-            elif confidence >= 0.5:
-                conf_color = "#d29922"
-            else:
-                conf_color = "#f85149"
-            conf_cell = (
-                f'<span style="color:{conf_color};font-weight:bold">{confidence:.2f}</span><br>'
-                f'<span style="color:#6c757d;font-size:0.78em">LLM {llm_lat_s:.2f}s</span>'
-            )
-        else:
-            conf_cell = '<span style="color:#6c757d">—</span>'
-
-        # ── Result cell ───────────────────────────────────────────
-        result_display = result_raw[:250] + ("…" if len(result_raw) > 250 else "")
-        if not result_raw or is_resolved:
-            result_cell = '<span style="color:#6c757d;font-size:0.80em">—</span>'
-        elif "ERROR" in result_raw or "error" in result_raw.lower():
-            result_cell = f'<span style="color:#f85149;font-size:0.80em" title="{result_raw}">⚠ {result_display}</span>'
-        elif "✅" in result_raw or "Restarted" in result_raw or "Killed" in result_raw or "limit" in result_raw.lower():
-            result_cell = f'<span style="color:#3fb950;font-size:0.80em" title="{result_raw}">✔ {result_display}</span>'
-        else:
-            result_cell = f'<span style="color:#c9d1d9;font-size:0.80em" title="{result_raw}">{result_display}</span>'
+        conf_pct = int((confidence or 0) * 100)
+        conf_color = "#3fb950" if conf_pct > 80 else ("#d29922" if conf_pct > 50 else "#f85149")
 
         rows += f"""
-        <tr style="{row_style}">
-          <td style="white-space:nowrap;color:#8b949e;font-size:0.85em">{ts_display}</td>
-          <td>{alert_cell}</td>
-          <td>{metrics_cell}</td>
-          <td>{decision_cell}</td>
-          <td style="text-align:center">{conf_cell}</td>
-          <td style="text-align:center">{mttr_cell}</td>
-          <td>{result_cell}</td>
+        <tr class="{row_class}">
+          <td class="time">{ts_display}</td>
+          <td class="alert">
+            <strong>{alert_name}</strong>
+            <span style="color:{sc_color}">● {scenario}</span>
+          </td>
+          <td class="metrics">{metric_html}</td>
+          <td class="decision">{decision_html}</td>
+          <td class="stat">
+            <div class="conf-ring" style="--pct:{conf_pct}; --color:{conf_color}">{conf_pct}%</div>
+            <small>LLM {llm_lat_s}s</small>
+          </td>
+          <td class="stat">{mttr_cell}</td>
+          <td class="result">{result_raw[:200]}</td>
         </tr>"""
-
-    if not rows:
-        rows = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:#6c757d">No actions recorded yet.</td></tr>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="refresh" content="5">
-  <title>AIOps Agent — Live Action Log</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <title>AIOps Center</title>
   <style>
-    *, *::before, *::after {{ box-sizing: border-box; }}
-    body  {{ font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
-             background:#0d1117; color:#c9d1d9; margin:0; padding:1rem 1.5rem; }}
-    h1    {{ color:#58a6ff; margin-bottom:0.25rem; font-size:1.3rem; }}
-    .sub  {{ color:#8b949e; margin-top:0; font-size:0.85rem; margin-bottom:1rem; }}
-    table {{ border-collapse:collapse; width:100%; table-layout:auto; }}
-    th,td {{ border:1px solid #21262d; padding:0.45rem 0.65rem; vertical-align:top; }}
-    th    {{ background:#161b22; color:#58a6ff; font-size:0.82rem;
-             text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap; }}
-    tr:hover td {{ background:#161b22 !important; }}
-    code  {{ background:#161b22; padding:2px 5px; border-radius:3px; font-size:0.88em; }}
-    .legend {{ display:flex; gap:1.5rem; margin-bottom:0.75rem; font-size:0.78rem; color:#6c757d; }}
-    .legend span {{ display:flex; align-items:center; gap:0.3rem; }}
-    .dot  {{ width:9px; height:9px; border-radius:50%; display:inline-block; }}
+    :root {{
+      --bg: #0a0c10; --card: rgba(22, 27, 34, 0.7); --border: #30363d;
+      --accent: #58a6ff; --text: #c9d1d9; --text-dim: #8b949e;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text);
+      margin: 0; padding: 2rem; background-image: radial-gradient(circle at 50% 0%, #161b22 0%, #0a0c10 100%);
+      min-height: 100vh;
+    }}
+    .container {{ max-width: 1400px; margin: 0 auto; }}
+    header {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; }}
+    h1 {{ margin: 0; font-weight: 600; font-size: 2rem; letter-spacing: -0.02em; color: var(--accent); }}
+    .status-bar {{ display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--text-dim); }}
+    
+    table {{ 
+        width: 100%; border-collapse: separate; border-spacing: 0 0.5rem; 
+        backdrop-filter: blur(12px);
+    }}
+    th {{ padding: 1rem; text-align: left; color: var(--text-dim); font-weight: 400; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; }}
+    tr {{ transition: transform 0.2s; }}
+    td {{ 
+        padding: 1.2rem 1rem; background: var(--card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+        vertical-align: top;
+    }}
+    td:first-child {{ border-left: 1px solid var(--border); border-radius: 8px 0 0 8px; }}
+    td:last-child {{ border-right: 1px solid var(--border); border-radius: 0 8px 8px 0; }}
+    
+    .time {{ color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }}
+    .alert strong {{ display: block; margin-bottom: 0.3rem; font-size: 1.1rem; }}
+    .alert span {{ font-size: 0.8rem; font-weight: 600; }}
+    
+    .metrics {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.4rem; min-width: 180px; }}
+    .metrics span {{ font-size: 0.75rem; color: var(--text-dim); display: flex; justify-content: space-between; padding-right: 0.5rem; }}
+    .metrics b {{ color: var(--text); }}
+    
+    .decision p {{ margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--text-dim); line-height: 1.4; }}
+    .decision code {{ background: rgba(88, 166, 255, 0.1); color: var(--accent); padding: 0.2rem 0.5rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }}
+    
+    .badge {{ font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; display: inline-block; }}
+    .badge.success {{ background: rgba(63, 185, 80, 0.2); color: #3fb950; }}
+    .badge.warning {{ background: rgba(210, 153, 34, 0.2); color: #d29922; }}
+    
+    .stat {{ text-align: center; min-width: 80px; }}
+    .stat small {{ display: block; color: var(--text-dim); font-size: 0.7rem; margin-top: 0.4rem; }}
+    
+    .conf-ring {{
+        width: 42px; height: 42px; border-radius: 50%; margin: 0 auto;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.75rem; font-weight: 600;
+        background: conic-gradient(var(--color) calc(var(--pct) * 1%), #21262d 0);
+        position: relative;
+    }}
+    .conf-ring::after {{ content: ''; position: absolute; inset: 4px; background: var(--bg); border-radius: 50%; z-index: 1; }}
+    .conf-ring span {{ position: relative; z-index: 2; }}
+
+    .result {{ font-size: 0.8rem; color: var(--text-dim); max-width: 250px; overflow: hidden; text-overflow: ellipsis; }}
+    
+    tr.resolved {{ opacity: 0.5; filter: grayscale(0.5); }}
+    tr.active td {{ border-color: rgba(88, 166, 255, 0.3); }}
+    tr:hover {{ transform: scale(1.005); }}
   </style>
 </head>
 <body>

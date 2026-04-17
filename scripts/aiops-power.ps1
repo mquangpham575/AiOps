@@ -15,7 +15,7 @@
 
 param (
     [Parameter(Mandatory=$true, Position=0)]
-    [ValidateSet("start", "stop", "status")]
+    [ValidateSet("start", "stop", "status", "deploy")]
     $Action,
     [ValidateSet("all", "control", "loadgen", "app")]
     [string]$Target = "all"
@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 $RG = "rg-aiops"
 $SSH_KEY = Join-Path $PSScriptRoot "..\.ssh\aiops3_key_rsa"
 $SSH_USER = "azureuser"
-$REMOTE_PROJECT_DIR = "/home/azureuser/3rdY-Sem2"
+$REMOTE_PROJECT_DIR = "/home/azureuser/AiOps"
 
 # VM Configuration (using existing VMs)
 $VMs = @{
@@ -98,27 +98,18 @@ function Deploy-Node {
     param(
         [string]$IP,
         [string]$ComposeFile,
-        [string]$NodeName
+        [string]$NodeName,
+        [string]$PackagePath
     )
 
     $sshKeyPath = Get-SshKeyPath
-
     Write-Host "    Connecting to $NodeName ($IP)..." -ForegroundColor Cyan
 
-    echo "Synchronizing local files to remote ($NodeName)..."
-    # Ensure remote directory exists
-    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "sudo mkdir -p $REMOTE_PROJECT_DIR && sudo chown -R $($SSH_USER):$($SSH_USER) $($REMOTE_PROJECT_DIR)"
+    $packageName = [System.IO.Path]::GetFileName($PackagePath)
+    $remotePackagePath = "$REMOTE_PROJECT_DIR/$packageName"
 
-    $localProjRoot = (Get-Item "$PSScriptRoot\..").FullName
-
-    # Synchronize only necessary config directories (skip heavy terraform binaries)
-    $remoteOpsDir = "$REMOTE_PROJECT_DIR/ops"
-    ssh @SSH_COMMON_ARGS -i $sshKeyPath "$SSH_USER@$IP" "mkdir -p $remoteOpsDir/infra $remoteOpsDir/monitoring"
-    
-    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath "$localProjRoot\ops\infra\*.yml" "$($SSH_USER)@$($IP):$remoteOpsDir/infra/"
-    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\ops\monitoring" "$($SSH_USER)@$($IP):$remoteOpsDir/"
-    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath -r "$localProjRoot\src" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
-    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath "$localProjRoot\.env" "$($SSH_USER)@$($IP):$($REMOTE_PROJECT_DIR)"
+    Write-Host "    Uploading deployment package..." -ForegroundColor Gray
+    scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i $sshKeyPath $PackagePath "$($SSH_USER)@$($IP):$remotePackagePath"
 
     $pathParts = $ComposeFile -split '[/\\\\]'
     $remoteFile = $pathParts[-1]
@@ -128,10 +119,14 @@ function Deploy-Node {
 set -e
 cd "$REMOTE_PROJECT_DIR"
 
+echo "Extracting package ($packageName)..."
+tar -xzf "$packageName" -C "$REMOTE_PROJECT_DIR"
+rm "$packageName"
+
 echo "Cleaning up existing containers in $remoteDir..."
 cd "$remoteDir"
-sudo docker compose -p aiops down --remove-orphans || true
-sudo docker rm -f pushgateway prometheus grafana alertmanager ai-agent rule-based-agent node-exporter cadvisor target-app || true
+sudo docker compose -p aiops down --remove-orphans 2>/dev/null || true
+sudo docker rm -f pushgateway prometheus grafana alertmanager ai-agent rule-based-agent node-exporter cadvisor target-app 2>/dev/null || true
 
 echo "Building and starting containers using $remoteFile..."
 sudo docker compose -p aiops -f "$remoteFile" up -d --build
@@ -158,7 +153,7 @@ function Stop-NodeContainers {
 switch ($Action) {
     "start" {
         Write-Host "========================================" -ForegroundColor Green
-        Write-Host " AIOps 3-Node Azure Cluster - START" -ForegroundColor Green
+        Write-Host " AIOps 3-Node Azure Cluster - VM START" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Green
         Write-Host ""
 
@@ -177,36 +172,49 @@ switch ($Action) {
             Start-VM -Name $VMs["app"].Name -IP $VMs["app"].PublicIP
         }
 
-        Write-Host "`nWaiting for SSH to be ready..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds 15
+        Write-Host "`n[OK] Target VMs are Power-ON. Use 'deploy' to sync code." -ForegroundColor Green
+    }
+
+    "deploy" {
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host " AIOps 3-Node Azure Cluster - DEPLOY" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host ""
+        
+        $localProjRoot = (Get-Item "$PSScriptRoot\..").FullName
+        $packagePath = Join-Path $PSScriptRoot "deploy_package.tar.gz"
+        
+        Write-Host "Creating deployment package..." -ForegroundColor Gray
+        # Exclude flags must come before the items to be packaged on some tar versions
+        tar -czf $packagePath -C $localProjRoot --exclude="ops/infra/terraform" --exclude="__pycache__" --exclude=".git" ops src .env
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "`n=== Deploying Control Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["control"].PublicIP -ComposeFile "ops/infra/docker-compose.control.yml" -NodeName "Control"
+            Deploy-Node -IP $VMs["control"].PublicIP -ComposeFile "ops/infra/docker-compose.control.yml" -NodeName "Control" -PackagePath $packagePath
         }
 
         if ($Target -eq "all" -or $Target -eq "loadgen") {
             Write-Host "`n=== Deploying Load Generator Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["loadgen"].PublicIP -ComposeFile "ops/infra/docker-compose.loadgen.yml" -NodeName "Load Gen"
+            Deploy-Node -IP $VMs["loadgen"].PublicIP -ComposeFile "ops/infra/docker-compose.loadgen.yml" -NodeName "Load Gen" -PackagePath $packagePath
         }
 
         if ($Target -eq "all" -or $Target -eq "app") {
             Write-Host "`n=== Deploying App Node ===" -ForegroundColor Cyan
-            Deploy-Node -IP $VMs["app"].PublicIP -ComposeFile "ops/infra/docker-compose.app.yml" -NodeName "App"
+            Deploy-Node -IP $VMs["app"].PublicIP -ComposeFile "ops/infra/docker-compose.app.yml" -NodeName "App" -PackagePath $packagePath
         }
+
+        if (Test-Path $packagePath) { Remove-Item $packagePath }
 
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Green
-        Write-Host " All nodes deployed successfully!" -ForegroundColor Green
+        Write-Host " Successfully deployed all specified nodes!" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Green
         Write-Host ""
         Write-Host "Access URLs:" -ForegroundColor White
         Write-Host "  Grafana:       http://$($VMs['control'].PublicIP):3000" -ForegroundColor Yellow
         Write-Host "  AI Agent:      http://$($VMs['control'].PublicIP):8083/logs/ui" -ForegroundColor Yellow
         Write-Host "  Prometheus:    http://$($VMs['control'].PublicIP):9090" -ForegroundColor Yellow
-        Write-Host "  Pushgateway:   http://$($VMs['control'].PublicIP):9091" -ForegroundColor Yellow
         Write-Host "  Target App:    http://$($VMs['app'].PublicIP):80/health" -ForegroundColor Yellow
-        Write-Host "  cAdvisor:      http://$($VMs['app'].PublicIP):8080" -ForegroundColor Yellow
     }
 
     "stop" {

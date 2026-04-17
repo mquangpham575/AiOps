@@ -32,23 +32,30 @@ scrape_configs:
       - targets: ["rule-based-agent:5001"]
     metrics_path: /metrics
 
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          instance: "Control Node"
+          node: "control-node"
+      - targets: ["${AZURE_APP_IP}:9100"]
+        labels:
+          instance: "App Node"
+          node: "app-node"
+      - targets: ["${AZURE_LOADGEN_IP}:9100"]
+        labels:
+          instance: "LoadGen Node"
+          node: "loadgen-node"
+
   # ── Remote (Azure VM) targets ───────────────────────────────
   - job_name: "target-app"
     static_configs:
       - targets: ["${AZURE_APP_IP}:80"]
     metrics_path: /metrics
 
-  - job_name: "node-exporter-app"
-    static_configs:
-      - targets: ["${AZURE_APP_IP}:9100"]
-
   - job_name: "cadvisor-app"
     static_configs:
       - targets: ["${AZURE_APP_IP}:8080"]
-
-  - job_name: "node-exporter-loadgen"
-    static_configs:
-      - targets: ["${AZURE_LOADGEN_IP}:9100"]
 
   # ── Federation (Aggregate metrics from Loadgen Prometheus) ──
   - job_name: 'federate'

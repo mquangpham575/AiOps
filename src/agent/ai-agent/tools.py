@@ -11,25 +11,39 @@ import docker
 import os
 import time
 
+import subprocess
+
 logger = logging.getLogger(__name__)
-_docker_client = None
 
 # ── Configuration from environment variables ──────────────────
 DEFAULT_CONTAINER = os.environ.get("TARGET_CONTAINER_NAME", "target-app")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000")
 GRAFANA_TOKEN = os.environ.get("GRAFANA_TOKEN", "")
+REMOTE_IP = os.environ.get("AZURE_APP_IP", "10.0.1.6")
+SSH_USER = os.environ.get("SSH_USER", "azureuser")
 
-
-def _get_docker():
-    global _docker_client
-    if _docker_client is None:
-        _docker_client = docker.from_env()
-    return _docker_client
+def _run_remote_docker(command: str) -> str:
+    # Execute a docker command on the remote App Node via SSH.
+    """Helper to run a docker command on the remote App node via SSH."""
+    ssh_cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-i", "/root/.ssh/id_rsa",
+        f"{SSH_USER}@{REMOTE_IP}",
+        f"sudo docker {command}"
+    ]
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return f"ERROR (code {result.returncode}): {result.stderr or result.stdout}"
+        return result.stdout.strip()
+    except Exception as e:
+        return f"SSH ERROR: {e}"
 
 
 # ── Tool 1: Lấy top process trong container ─────────────────
 def get_top_processes(container_name: str = None) -> str:
+    # Retrieve the top 5 CPU-consuming processes from a specified container.
     """
     Lấy danh sách top 5 process tốn CPU nhất trong container.
     Dùng khi: CPU cao, cần xác định process thủ phạm.
@@ -38,16 +52,17 @@ def get_top_processes(container_name: str = None) -> str:
         container_name = DEFAULT_CONTAINER
 
     try:
-        client = _get_docker()
-        container = client.containers.get(container_name)
+        # Use remote SSH instead of local docker client
+        output = _run_remote_docker(f"top {container_name} aux")
+        if "ERROR" in output:
+            return output
 
-        # Method 1: Dùng docker top API
-        top_result = container.top(ps_args="aux")
-        if not top_result or "Processes" not in top_result:
-            return f"Cannot get processes for {container_name}"
+        lines = output.split('\n')
+        if len(lines) < 2:
+            return f"Cannot get processes for {container_name} (empty output)"
 
-        processes = top_result["Processes"]
-        titles = top_result["Titles"]
+        titles = lines[0].split()
+        processes = [l.split() for l in lines[1:] if l.strip()]
 
         # Tìm CPU column index
         try:
@@ -56,15 +71,19 @@ def get_top_processes(container_name: str = None) -> str:
             cpu_idx = 2  # fallback
 
         # Sort by CPU descending
-        sorted_procs = sorted(processes, key=lambda x: float(x[cpu_idx]) if x[cpu_idx].replace('.','').isdigit() else 0, reverse=True)
+        def get_cpu(p):
+            try: return float(p[cpu_idx]) if len(p) > cpu_idx else 0
+            except: return 0
+
+        sorted_procs = sorted(processes, key=get_cpu, reverse=True)
 
         # Format output
-        output_lines = [" ".join(titles)]
+        res_lines = [" ".join(titles)]
         for proc in sorted_procs[:5]:
-            output_lines.append(" ".join(proc))
+            res_lines.append(" ".join(proc))
 
-        result_str = "\n".join(output_lines)
-        logger.info(f"[get_top_processes] {container_name}:\n{result_str}")
+        result_str = "\n".join(res_lines)
+        logger.info(f"[get_top_processes] {container_name} (REMOTE):\n{result_str}")
         return f"Top processes in {container_name}:\n{result_str}"
     except Exception as e:
         logger.error(f"[get_top_processes] Error: {e}")
@@ -83,6 +102,7 @@ PROCESS_SYNONYMS = {
 }
 
 def _get_process_patterns(process_name):
+    # Generate a list of common synonyms and patterns for a given process name.
     """Get all possible process name patterns for matching."""
     patterns = [process_name.lower()]
 
@@ -94,12 +114,14 @@ def _get_process_patterns(process_name):
     return list(set(patterns))  # Remove duplicates
 
 def _match_process(command, patterns):
+    # Determine if a process command string matches any of the provided search patterns.
     """Check if a process command matches any of the patterns."""
     command_lower = command.lower()
     return any(pattern in command_lower for pattern in patterns)
 
 # ── Tool 2: Kill process trong container ────────────────────
 def kill_process(container_name: str = None, process_name: str = "stress-ng") -> str:
+    # Terminate a specific process within a container using intelligent name matching.
     """
     Kill process theo tên trong container với intelligent matching.
     Dùng khi: xác định được process gây quá tải.
@@ -119,18 +141,19 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
 
         # For stress-related processes, restart container is most reliable
         if any(stress_pattern in process_name.lower() for stress_pattern in ["stress", "cpu", "load"]):
-            container.restart(timeout=10)
-            msg = f"Restarted {container_name} to kill all stress processes ({process_name})"
+            output = _run_remote_docker(f"restart {container_name}")
+            if "ERROR" in output: return output
+            msg = f"Restarted {container_name} remotely to kill all stress processes ({process_name})"
             logger.info(f"[kill_process] {msg}")
             return msg
 
-        # For other processes, try intelligent process matching
-        top_result = container.top(ps_args="aux")
-        if not top_result or "Processes" not in top_result:
-            return f"Cannot get processes for {container_name}"
-
-        processes = top_result["Processes"]
-        titles = top_result["Titles"]
+        # For other processes, try remote process matching
+        output = _run_remote_docker(f"top {container_name} aux")
+        if "ERROR" in output: return output
+        
+        lines = output.split('\n')
+        titles = lines[0].split()
+        processes = [l.split() for l in lines[1:] if l.strip()]
 
         try:
             pid_idx = titles.index("PID")
@@ -141,21 +164,18 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
 
         killed_count = 0
         matched_processes = []
-
-        # Find processes that match our patterns
         for proc in processes:
             command = proc[cmd_idx] if cmd_idx >= 0 else ""
-            if _match_process(command, patterns):
+            if _match_process(command, patterns) and len(proc) > pid_idx:
                 matched_processes.append((proc[pid_idx], command))
 
-        # Kill matched processes
         for pid, command in matched_processes:
             try:
-                container.exec_run(f"kill -9 {pid}")
+                _run_remote_docker(f"exec {container_name} kill -9 {pid}")
                 killed_count += 1
-                logger.info(f"[kill_process] Killed PID {pid} ({command})")
+                logger.info(f"[kill_process] Killed remote PID {pid} ({command})")
             except Exception as e:
-                logger.warning(f"[kill_process] Failed to kill PID {pid}: {e}")
+                logger.warning(f"[kill_process] Failed to kill remote PID {pid}: {e}")
 
         if killed_count > 0:
             msg = f"Killed {killed_count} process(es) matching '{process_name}': {[cmd for _, cmd in matched_processes]}"
@@ -171,6 +191,7 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
 
 # ── Tool 3: Restart service (container) ─────────────────────
 def restart_service(container_name: str = None) -> str:
+    # Perform a forceful restart of a specified Docker container to restore service health.
     """
     Restart container để phục hồi service.
     Dùng khi: service crash, không responsive.
@@ -179,10 +200,9 @@ def restart_service(container_name: str = None) -> str:
         container_name = DEFAULT_CONTAINER
 
     try:
-        client = _get_docker()
-        container = client.containers.get(container_name)
-        container.restart(timeout=10)
-        msg = f"Restarted container: {container_name}"
+        output = _run_remote_docker(f"restart {container_name}")
+        if "ERROR" in output: return output
+        msg = f"Restarted container remotely: {container_name}"
         logger.info(f"[restart_service] {msg}")
         return msg
     except Exception as e:
@@ -192,6 +212,7 @@ def restart_service(container_name: str = None) -> str:
 
 # ── Tool 5: Query Prometheus metrics ────────────────────────
 def get_prometheus_metrics(query: str) -> str:
+    # Query the Prometheus API to retrieve current metric values for reasoning context.
     """
     Query Prometheus để lấy metric thực tế tại thời điểm hiện tại.
     Dùng khi: cần context số liệu cụ thể trước khi quyết định.
@@ -224,6 +245,7 @@ def get_prometheus_metrics(query: str) -> str:
 
 # ── Tool 4: Query Prometheus metrics ────────────────────────
 def check_system_load() -> str:
+    # Analyze the system load average and provide a categorical status assessment.
     """
     Kiểm tra system load average và processes có thể gây load cao.
     Dùng khi: system load cao, cần identify root cause.
@@ -269,26 +291,20 @@ def check_system_load() -> str:
 
 # ── Tool 8: Reduce system load ──────────────────────────────
 def reduce_system_load() -> str:
+    # Execute a set of emergency actions to lower critical system load.
     """
     Giảm system load bằng cách restart containers và clear caches.
     Dùng khi: system load quá cao cần emergency reduction.
     """
     try:
         actions = []
-
-        # 1. Restart target containers that might cause high load
-        client = _get_docker()
-        target_containers = [DEFAULT_CONTAINER]
-
-        for container_name in target_containers:
-            try:
-                container = client.containers.get(container_name)
-                container.restart(timeout=10)
-                actions.append(f"✅ Restarted {container_name}")
-                logger.info(f"[reduce_system_load] Restarted {container_name}")
-            except Exception as e:
-                actions.append(f"❌ Failed to restart {container_name}: {e}")
-                logger.warning(f"[reduce_system_load] Failed to restart {container_name}: {e}")
+        # Restart target containers that might cause high load on remote node
+        output = _run_remote_docker(f"restart {DEFAULT_CONTAINER}")
+        if "ERROR" in output:
+            actions.append(f"❌ Failed to restart {DEFAULT_CONTAINER}: {output}")
+        else:
+            actions.append(f"✅ Restarted {DEFAULT_CONTAINER} remotely")
+            logger.info(f"[reduce_system_load] Restarted {DEFAULT_CONTAINER} remotely")
 
         # 2. Wait a moment for system to settle
         time.sleep(2)
@@ -317,7 +333,8 @@ def reduce_system_load() -> str:
 
 
 # ── Tool 9: Auto-analyze and kill high CPU processes ───────────
-def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 50.0) -> str:
+def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 70.0) -> str:
+    # Automatically identify and terminate high-CPU stress processes based on a threshold.
     """
     Multi-step workflow: Automatically analyze top processes and kill high CPU consumers.
     Dùng khi: CPU overload, cần tự động xử lý không cần manual intervention.
@@ -376,6 +393,7 @@ def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 50.0
 
 # ── Tool 10: Smart container validation ─────────────────────────
 def validate_container_exists(container_name: str = None) -> str:
+    # Verify that a target container is present and check its current operational status.
     """
     Validate that a container exists and is running before taking actions.
     Dùng khi: Cần check container trước khi thực hiện action để tránh lỗi.
@@ -384,17 +402,16 @@ def validate_container_exists(container_name: str = None) -> str:
         container_name = DEFAULT_CONTAINER
 
     try:
-        client = _get_docker()
-        container = client.containers.get(container_name)
+        output = _run_remote_docker(f"inspect -f '{{{{.State.Status}}}}' {container_name}")
+        if "ERROR" in output:
+            if "No such container" in output: return f"❌ Container '{container_name}' not found"
+            return output
 
-        status = container.status
+        status = output.strip().replace("'", "")
         if status == "running":
-            return f"✅ Container '{container_name}' exists and is running"
+            return f"✅ Container '{container_name}' exists and is running (REMOTE)"
         else:
-            return f"⚠️ Container '{container_name}' exists but is {status}"
-
-    except docker.errors.NotFound:
-        return f"❌ Container '{container_name}' not found"
+            return f"⚠️ Container '{container_name}' exists but is {status} (REMOTE)"
     except Exception as e:
         logger.error(f"[validate_container_exists] Error: {e}")
         return f"ERROR: {e}"
@@ -402,6 +419,7 @@ def validate_container_exists(container_name: str = None) -> str:
 
 # ── Tool 11: Post Grafana annotation ────────────────────────
 def post_grafana_annotation(text: str, tags: list) -> str:
+    # Create an annotation on Grafana dashboards to record an AI agent intervention.
     """
     Post an annotation to all Grafana dashboards marking AI intervention.
     Called automatically after every tool execution — failure is non-fatal.

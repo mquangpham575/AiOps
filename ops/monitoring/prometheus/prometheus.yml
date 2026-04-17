@@ -9,8 +9,8 @@
 #   Node 3 (App):      10.0.1.6 - target-app, node-exporter, cAdvisor
 
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 10s
+  evaluation_interval: 10s
 
 alerting:
   alertmanagers:
@@ -40,24 +40,26 @@ scrape_configs:
     static_configs:
       - targets: ["pushgateway:9091"]
 
-  - job_name: "node-exporter-control"
+  - job_name: "node-exporter"
     static_configs:
       - targets: ["node-exporter:9100"]
-
-  # ── Load Generator Node (10.0.1.5) ───────────────────────────
-  - job_name: "node-exporter-loadgen"
-    static_configs:
+        labels:
+          instance: "Control Node"
+          node: "control-node"
       - targets: ["10.0.1.5:9100"]
+        labels:
+          instance: "LoadGen Node"
+          node: "loadgen-node"
+      - targets: ["10.0.1.6:9100"]
+        labels:
+          instance: "App Node"
+          node: "app-node"
 
   # ── App Node (10.0.1.6) ───────────────────────────────────────
   - job_name: "target-app"
     static_configs:
       - targets: ["10.0.1.6:80"]
     metrics_path: /metrics
-
-  - job_name: "node-exporter-app"
-    static_configs:
-      - targets: ["10.0.1.6:9100"]
 
   - job_name: "cadvisor-app"
     static_configs:

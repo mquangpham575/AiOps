@@ -116,14 +116,14 @@ Access the following interfaces once the system is running:
 
 | Interface         | Address                         | Purpose                                        |
 | :---------------- | :------------------------------ | :--------------------------------------------- |
-| **Grafana**       | `http://<CONTROL_IP>:3000`      | View Performance Dashboards (Node 1)          |
-| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui` | Live view of AI reasoning and actions (Node 1)|
+| **Grafana**       | `http://<CONTROL_IP>:3000`      | View AIOps Observability Suite (Node 1)        |
+| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui` | Live view of Gemini reasoning (Node 1)         |
 | **Prometheus**    | `http://<CONTROL_IP>:9090`      | Inspect metric scrape targets (Node 1)         |
-| **Target App**    | `http://<APP_IP>:80`            | Target for performance testing (Node 3)        |
+| **Target App**    | `http://<APP_IP>:80`            | Production target for performance tests (Node 3)|
 
 > Run `.\scripts\aiops-power.ps1 status` to get current public IPs.
 
-Dashboards are auto-provisioned from `ops/monitoring/grafana/dashboards/`.
+Dashboards are auto-provisioned from the standardized suite in `ops/monitoring/grafana/dashboards/`.
 
 ---
 

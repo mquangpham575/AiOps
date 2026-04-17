@@ -30,7 +30,7 @@
 This will:
 1. Start 3 Azure VMs (Control, LoadGen, App)
 2. Clone/pull the repo on each VM
-3. Deploy Docker containers via docker-compose
+3. Deploy Docker containers via aiops-power.ps1 (scp/tar based)
 
 ### Step 2: Access Dashboards
 
@@ -46,9 +46,9 @@ This will:
 | cAdvisor | App (Node 3) | 10.0.1.6 | 8080 |
 
 Grafana dashboards are auto-provisioned from `ops/monitoring/grafana/dashboards/`:
-- `aiops_pro_v1.json` — Cluster Observability (golden signals, infra health)
-- `agent-analytics.json` — Agent Insights (throughput, decision metrics)
-- `mttr-comparison.json` — MTTR Comparison: AI vs Rule-Based
+- `cluster-observability.json` — **AIOps: Cluster Observability** (golden signals, infra health)
+- `agent-insights.json` — **AIOps: Agent Intelligence Insights** (scoring, decision metrics)
+- `mttr-recovery.json` — **AIOps: Recovery Performance (MTTR)**: AI vs Rule-Based
 
 ### Step 3: Verify Status
 
@@ -68,12 +68,12 @@ Scenarios must be run from **Node 2 (LoadGen)** for accurate load injection and 
 # Throughput scenario (60s)
 az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm `
   --command-id RunShellScript `
-  --scripts "cd /home/azureuser/3rdY-Sem2 && python3 scripts/demo_runner.py --scenario throughput --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
+  --scripts "cd /home/azureuser/AiOps && python3 scripts/demo_runner.py --scenario throughput --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
 
 # CPU MTTR scenario
 az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm `
   --command-id RunShellScript `
-  --scripts "cd /home/azureuser/3rdY-Sem2 && python3 scripts/demo_runner.py --scenario cpu --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
+  --scripts "cd /home/azureuser/AiOps && python3 scripts/demo_runner.py --scenario cpu --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
 ```
 
 ### Option 2: Direct SSH
@@ -83,7 +83,7 @@ az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm `
 ssh -i .ssh/aiops3_key_rsa azureuser@<LOADGEN_PUBLIC_IP>
 
 # Run all scenarios
-cd /home/azureuser/3rdY-Sem2
+cd /home/azureuser/AiOps
 python3 scripts/demo_runner.py --scenario all --iterations 1 \
   --target-url http://10.0.1.6:80 \
   --agent-url http://10.0.1.4:8083 \

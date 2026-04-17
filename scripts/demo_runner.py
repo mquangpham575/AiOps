@@ -450,14 +450,27 @@ class DemoRunner:
         method = injection.get("method")
 
         if method == "stress-ng":
-            cmd = injection["command"].format(duration=duration)
+            cmd_str = injection["command"].format(duration=duration)
             container = injection.get("container", "target-app")
+            
+            # If we have an App IP, use it directly via SSH for reliability
+            app_ip = os.environ.get("AZURE_APP_IP")
+            if app_ip:
+                print(f"    [INFO] Injecting stress via SSH to {app_ip}...")
+                ssh_cmd = f"sudo docker exec {container} {cmd_str}"
+                return subprocess.Popen(
+                    ["ssh", "-o", "StrictHostKeyChecking=no", "-i", ".ssh/aiops3_key_rsa", f"azureuser@{app_ip}", ssh_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            # Local/Tunnel fallback
             env = {**os.environ}
             docker_host = _resolve_docker_host()
             if docker_host:
                 env["DOCKER_HOST"] = docker_host
             return subprocess.Popen(
-                ["docker", "exec", container] + cmd.split(),
+                ["docker", "exec", container] + cmd_str.split(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=env,

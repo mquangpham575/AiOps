@@ -20,7 +20,7 @@ import threading
 
 import docker
 from flask import Flask, request, jsonify
-from prometheus_client import Gauge
+from prometheus_client import Gauge, Counter
 
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -39,9 +39,10 @@ try:
 except Exception as e:
     logger.warning(f"Prometheus exporter skipped: {e}")
     from flask import Response
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     @app.route("/metrics")
     def metrics():
-        return Response("# Rule-based agent metrics (fallback)\n", mimetype="text/plain")
+        return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 # ── MTTR Prometheus gauges ───────────────────────────────────
 AGENT_RESPONSE_LATENCY = Gauge(
@@ -54,6 +55,21 @@ AGENT_MTTR = Gauge(
     "End-to-end incident response time (alert startsAt to action taken)",
     ["agent_type"],
 )
+
+# AGENT_REMEDIATION_COUNT: Theo dõi số lượng hành động remediation
+AGENT_REMEDIATION_COUNT = Counter(
+    "agent_remediation_count_total",
+    "Total count of remediation actions taken by the agent",
+    ["agent_type", "status"],
+)
+
+# Khởi tạo giá trị 0 cho labels để tránh 'No Data' trên dashboard
+AGENT_RESPONSE_LATENCY.labels(agent_type="rule").set(0)
+AGENT_MTTR.labels(agent_type="rule").set(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="success").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="failure").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="resolved").inc(0)
+AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="monitoring").inc(0)
 
 # ── Docker client ────────────────────────────────────────────
 _docker_client = None
@@ -196,6 +212,7 @@ def alert_webhook():
                 "latency_ms": 0,
             }
             action_log.append(entry)
+            AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="resolved").inc()
             results.append(entry)
             continue
 
@@ -224,12 +241,20 @@ def alert_webhook():
             set_cooldown(cooldown_key)
         else:
             tool_result = f"Logged alert {alertname} — no remediation defined"
+            AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="monitoring").inc()
 
         action_taken_at = datetime.now(timezone.utc)
 
         # ── Record MTTR metrics ──────────────────────────────
         response_latency = (action_taken_at - webhook_received_at).total_seconds()
         AGENT_RESPONSE_LATENCY.labels(agent_type="rule").set(response_latency)
+        
+        # Track success/failure only if an action was actually taken
+        if action_name in ACTIONS:
+            if tool_result and "ERROR" not in str(tool_result).upper():
+                AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="success").inc()
+            else:
+                AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="failure").inc()
 
         mttr = None
         try:

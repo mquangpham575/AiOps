@@ -75,16 +75,19 @@ services:
     user: root
     env_file:
       - ../../.env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../.ssh/aiops3_key_rsa:/root/.ssh/id_rsa:ro
     environment:
       - TARGET_CONTAINER_NAME=target-app
+      - AZURE_APP_IP=10.0.1.6
+      - SSH_USER=azureuser
       - PROMETHEUS_URL=http://prometheus:9090
       - ALERTMANAGER_URL=http://alertmanager:9093
       - DOCKER_HOST=unix:///var/run/docker.sock
       - GRAFANA_URL=http://grafana:3000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DEBUG_MODE=${DEBUG_MODE:-false}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8083:8080"
     networks:

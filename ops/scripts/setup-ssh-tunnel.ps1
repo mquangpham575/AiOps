@@ -10,17 +10,31 @@ param(
     [ValidateSet("grafana", "prometheus", "pushgateway", "cadvisor", "all")]
     [string]$Service = "",
     [switch]$All,
-    [string]$SSHKey = "$PSScriptRoot\..\..\..\.ssh\aiops3_key_rsa"
+    [string]$SSHKey = "$PSScriptRoot\..\..\.ssh\aiops3_key_rsa"
 )
 
 $ErrorActionPreference = "Stop"
 
-# VM Configuration
+# Load public IPs from .env
+$envPath = Join-Path $PSScriptRoot "..\..\.env"
+if (Test-Path $envPath) {
+    $envContent = Get-Content $envPath
+    $AZURE_CONTROL_IP = ($envContent | Select-String "^AZURE_CONTROL_IP=").Line.Split("=")[1].Split("#")[0].Trim()
+    $AZURE_LOADGEN_IP = ($envContent | Select-String "^AZURE_LOADGEN_IP=").Line.Split("=")[1].Split("#")[0].Trim()
+    $AZURE_APP_IP = ($envContent | Select-String "^AZURE_APP_IP=").Line.Split("=")[1].Split("#")[0].Trim()
+} else {
+    # Fallback to defaults if .env not found
+    $AZURE_CONTROL_IP = "104.215.158.157"
+    $AZURE_LOADGEN_IP = "104.215.191.69"
+    $AZURE_APP_IP = "4.194.57.3"
+}
+
+# VM Configuration (using Public IPs)
 $VM_USER = "azureuser"
 $VM_IPS = @{
-    "control"  = "10.0.1.4"
-    "loadgen"  = "10.0.1.5"
-    "app"      = "10.0.1.6"
+    "control"  = $AZURE_CONTROL_IP
+    "loadgen"  = $AZURE_LOADGEN_IP
+    "app"      = $AZURE_APP_IP
 }
 
 # Service ports mapping

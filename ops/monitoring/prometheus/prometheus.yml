@@ -9,8 +9,8 @@
 #   Node 3 (App):      10.0.1.6 - target-app, node-exporter, cAdvisor
 
 global:
-  scrape_interval: 10s
-  evaluation_interval: 10s
+  scrape_interval: 5s
+  evaluation_interval: 5s
 
 alerting:
   alertmanagers:

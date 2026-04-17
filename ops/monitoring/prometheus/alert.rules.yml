@@ -18,7 +18,7 @@ groups:
           rate(flask_http_request_duration_seconds_sum{job="target-app"}[1m])
           /
           rate(flask_http_request_duration_seconds_count{job="target-app"}[1m]) > 1.5
-        for: 30s
+        for: 10s
         labels:
           severity: critical
           scenario: ddos
@@ -27,8 +27,8 @@ groups:
           description: "Latency trung binh: {{ $value | humanizeDuration }}"
 
       - alert: HighRequestRate
-        expr: sum(rate(flask_http_request_total{job="target-app"}[30s])) > 10
-        for: 15s
+        expr: sum(rate(flask_http_request_total{job="target-app"}[30s])) > 15
+        for: 10s
         labels:
           severity: warning
           scenario: ddos
@@ -37,15 +37,22 @@ groups:
           description: "Rate: {{ $value }} packets/s"
 
       # ── Kịch bản 3: CPU / Memory stress ────────────────────
-      # HighCPUUsage monitors HOST cpu — kept as a wide-net fallback.
-      # Threshold lowered to 80% (from 98%) so it can fire on a shared host;
-      # for: reduced to 30s so a 60s stress window reliably triggers it.
+      - alert: ProactiveCPUSaturation
+        expr: predict_linear(node_cpu_seconds_total{mode!="idle"}[30s], 60) > 0.9
+        for: 10s
+        labels:
+          severity: critical
+          scenario: cpu_stress
+        annotations:
+          summary: "PROACTIVE: CPU qua tai trong < 60s"
+          description: "Dự đoán CPU sẽ bùng nổ. AI Agent can thiệp ngay."
+
       - alert: HighCPUUsage
         expr: |
           100 - (avg by(instance)(
             rate(node_cpu_seconds_total{mode="idle"}[1m])
           ) * 100) > 80
-        for: 30s
+        for: 10s
         labels:
           severity: critical
           scenario: cpu_stress
@@ -53,16 +60,21 @@ groups:
           summary: "CPU qua tai"
           description: "CPU usage: {{ $value | humanize }}%"
 
-      # HighMemoryUsage now monitors CONTAINER memory as a % of its limit.
-      # Host memory is already ~84% idle on Windows/WSL2 — using host metrics
-      # means the threshold (> 90%) is only 6% above baseline, and the 256MB
-      # container cap cannot push the host far enough. Using container-relative
-      # usage (usage / limit * 100 > 60%) gives a reliable trigger under load.
+      - alert: ProactiveMemoryExhaustion
+        expr: predict_linear(container_memory_usage_bytes{name="target-app"}[1m], 120) > container_spec_memory_limit_bytes{name="target-app"}
+        for: 10s
+        labels:
+          severity: critical
+          scenario: memory_stress
+        annotations:
+          summary: "PROACTIVE: RAM sẽ đầy trong < 120s"
+          description: "Dự đoán OOM. AI Agent can thiệp ngay."
+
       - alert: HighMemoryUsage
         expr: |
           container_memory_usage_bytes{name="target-app"}
           / container_spec_memory_limit_bytes{name="target-app"} * 100 > 60
-        for: 30s
+        for: 10s
         labels:
           severity: critical
           scenario: memory_stress

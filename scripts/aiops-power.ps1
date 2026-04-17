@@ -186,7 +186,7 @@ switch ($Action) {
         
         Write-Host "Creating deployment package..." -ForegroundColor Gray
         # Exclude flags must come before the items to be packaged on some tar versions
-        tar -czf $packagePath -C $localProjRoot --exclude="ops/infra/terraform" --exclude="__pycache__" --exclude=".git" ops src .env
+        tar -czf $packagePath -C $localProjRoot --exclude="ops/infra/terraform" --exclude="__pycache__" --exclude=".git" ops src tests scripts .env
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "`n=== Deploying Control Node ===" -ForegroundColor Cyan

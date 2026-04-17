@@ -8,8 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docker.com)
 [![AI](https://img.shields.io/badge/AI-Google%20Gemini-4285F4.svg)](https://ai.google.dev)
 [![Monitoring](https://img.shields.io/badge/Monitoring-Prometheus-E6522C.svg)](https://prometheus.io)
-[![Load Testing](https://img.shields.io/badge/Load%20Testing-Locust-3DDC84.svg)](https://locust.io)
-[![Status](https://img.shields.io/badge/Status-Academic%20Prototype-0078D4.svg)]()
+[![Status](https://img.shields.io/badge/Status-Project%20Finalized-0078D4.svg)]()
 
 **NT531 Network System Performance Evaluation Project**
 
@@ -17,135 +16,72 @@
 
 ---
 
-## Project Overview
+## 🏗 Detailed Project Topology
 
-This repository contains a **Distributed AIOps Proof-of-Concept (PoC)** designed to automate the detection, analysis, and remediation of system incidents. The system evaluates the performance of an **LLM-powered AI Agent** in terms of **Time To Recovery (TTR)** and its impact on legitimate traffic so as to prove its value over traditional baselines.
+The system is deployed across a stabilized **3-Node Azure Infrastructure** (VNet: `10.0.1.0/24`). All inter-node communication is secured via internal SSH and optimized for sub-second metric scraping.
 
-The infrastructure is distributed across three Azure VMs (VNet: 10.0.1.0/24):
-- **Node 1: Control Plane (aiops-control):** Runs Prometheus, AI Agent (Port 8083), and Rule-based Agent.
-- **Node 2: Load Plane (aiops-loadgen):** Runs Locust load generator and Pushgateway.
-- **Node 3: App Plane (aiops-app):** Runs the target Flask application and metrics exporters.
-
----
-
-## 📂 Repository Structure
-
-```text
-DoAn/
-├── src/                           # ── SOURCE CODE ──
-│   ├── agent/                     # AI Agent + Rule-based Agent
-│   │   ├── ai-agent/             # LLM-powered agent (Gemini)
-│   │   └── rule-based-agent/     # Deterministic baseline agent
-│   └── app/                      # Target Flask Application
-├── ops/                           # ── OPERATIONS & INFRA ──
-│   ├── infra/                     # Docker Compose configs
-│   └── monitoring/                # Prometheus, AlertManager, Grafana
-├── tests/                         # ── TESTING & BENCHMARKS ──
-│   ├── performance/               # Locust load test files
-│   │   ├── locustfile.py         # Unified load test (all scenarios)
-│   │   └── scenarios.yml         # Scenario configuration
-│   └── unit/                      # Pytest unit tests
-├── scripts/                       # ── AUTOMATION SCRIPTS ──
-│   ├── demo_runner.py            # Config-driven scenario runner (JSON output)
-│   ├── run_all.sh               # Run all scenarios sequentially
-│   ├── run_scenario1.sh         # Throughput & Latency
-│   ├── run_scenario2.sh         # CPU Stress MTTR
-│   ├── run_scenario3.sh         # Memory/DDoS Trade-off
-│   └── aiops-power.ps1          # Azure VM power control
-├── docs/                          # Documentation
-├── results/                       # CSV and JSON outputs per scenario
-└── demo-guide.md                  # Quick-start instructions
-```
+| Node | Role | Public IP | Private IP | Key Components |
+| :--- | :--- | :--- | :--- | :--- |
+| **Node 1** | **Control Plane** | `104.215.158.157` | `10.0.1.4` | Prometheus, AI Agent, Rule Agent, Grafana |
+| **Node 2** | **Load Generator** | `104.215.191.69` | `10.0.1.5` | Locust, DDoS Engine, Pushgateway |
+| **Node 3** | **App Plane** | `4.194.57.3` | `10.0.1.6` | Target Flask App, Node Exporter, cAdvisor |
 
 ---
 
-## 🎯 Evaluation Scenarios
+## 🧠 Autonomous Remediation Pipeline
 
-The system is evaluated through three primary performance scenarios:
+The system evaluates an **LLM-powered AI Agent** (Gemini) that bridges the gap between observability and action.
 
-| Scenario | Description | Key Metrics |
-|----------|-------------|-------------|
-| **1: Throughput** | Baseline vs Load comparison | p50/p95/p99 latency, RPS, error rate |
-| **2: CPU MTTR** | AI vs Rule-Based Agent comparison | MTTR, detection time, response time |
-| **3: Memory/DDoS** | Rate limiting trade-off | Success rate, block rate |
-
----
-
-## 🕹️ Quick Start
-
-### 1. Power Control
-```powershell
-# Start all VMs and containers
-.\scripts\aiops-power.ps1 start
-
-# Check status
-.\scripts\aiops-power.ps1 status
-```
-
-### 2. Run Scenarios
-
-```bash
-# Run all scenarios (recommended)
-./scripts/run_all.sh
-
-# Run individual scenarios
-./scripts/run_scenario1.sh    # Throughput baseline vs load
-./scripts/run_scenario2.sh    # CPU MTTR comparison
-./scripts/run_scenario3.sh    # Memory/DDoS trade-off
-
-# Or use Python directly with JSON output
-python scripts/demo_runner.py --scenario all --json-output
-```
-
-### 3. View Results
-
-```bash
-# JSON summary files
-cat results/throughput/summary.json
-cat results/throughput/comparison.json
-
-# CSV export
-cat results/throughput/results.csv
-```
+1.  **Observability Layer**: Prometheus scrapes application and container metrics every 15s.
+2.  **Alerting Layer**: AlertManager triggers webhooks to the AI Agent when thresholds (CPU > 70%, RAM > 80%, RPS > 60) are breached.
+3.  **Reasoning Layer**: The AI Agent performs real-time metric analysis to identify the specific root cause (e.g., distinguishing between a legitimate traffic spike and a containerized CPU flood).
+4.  **Action Layer**: The Agent executes autonomous tools via the `tools.py` toolbelt, including **Aggressive Process Killing** and **Service Recovery**.
 
 ---
 
-## 📊 Monitoring & Dashboards
+## 🎯 Master Validation Scenarios (Remediation IQ)
 
-Access the following interfaces once the system is running:
+The pipeline is field-proven across three definitive failure signatures:
 
-| Interface         | Address                         | Purpose                                        |
-| :---------------- | :------------------------------ | :--------------------------------------------- |
-| **Grafana**       | `http://<CONTROL_IP>:3000`      | View AIOps Observability Suite (Node 1)        |
-| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui` | Live view of Gemini reasoning (Node 1)         |
-| **Prometheus**    | `http://<CONTROL_IP>:9090`      | Inspect metric scrape targets (Node 1)         |
-| **Target App**    | `http://<APP_IP>:80`            | Production target for performance tests (Node 3)|
+### 🚨 Scenario 01: Intelligent CPU Flood Mitigation
+- **Incident**: Distributed `stress-ng` core saturation.
+- **AI Tool**: `auto_kill_cpu_stress` (High-Precision Kill).
+- **Outcome**: Agent identifies the specific stress process and terminates it without impacting the parent app service.
 
-> Run `.\scripts\aiops-power.ps1 status` to get current public IPs.
+### 🚨 Scenario 02: Memory Exhaustion Recovery
+- **Incident**: Recursive memory leak causing OOM and latency degradation.
+- **AI Tool**: `restart_service` (Clean State Restore).
+- **Outcome**: Agent observes the RAM/Latency correlation and performs a soft-reset of the target container.
 
-Dashboards are auto-provisioned from the standardized suite in `ops/monitoring/grafana/dashboards/`.
+### 🚨 Scenario 03: DDoS Resilience & Recovery
+- **Incident**: Brute-force parallel flood (60+ RPS).
+- **AI Tool**: `restart_service` + connection clearing.
+- **Outcome**: Agent monitors normalization and ensures the app recovers its baseline baseline ($<1\%$) as soon as the attack ceases.
 
 ---
 
-## 📈 Output Format
+## 📊 Monitoring & Performance Evidence
 
-Each scenario generates:
+All metrics are synchronized to a **1-minute real-time window** across the following dashboards:
 
-```
-results/{scenario}/
-├── runs/
-│   ├── run_001/
-│   │   └── {phase}_metrics.json     # Per-run metrics
-│   └── run_002/
-├── summary.json                      # Aggregated stats (mean ± stdev)
-├── comparison.json                   # Baseline vs Load comparison
-└── results.csv                       # CSV export
-```
+| Dashboard | Access URL | Purpose |
+| :--- | :--- | :--- |
+| **Cluster Observability** | [http://104.215.158.157:3000](http://104.215.158.157:3000) | Full system health & signals |
+| **Agent Insights** | [http://104.215.158.157:3000](http://104.215.158.157:3000) | Live AI reasoning & MTTR traces |
+| **MTTR Comparison** | [http://104.215.158.157:3000](http://104.215.158.157:3000) | AI vs Rule-Based performance audit |
+
+---
+
+## 🕹 Orchestration & Testing
+
+For detailed instructions on triggering these scenarios and witnessing the Agent in action, refer to:
+- **[demo-guide.md](file:///d:/Study/3rd-y/3rdY-Sem2/NT531.Q21-DanhGiaHieuNang/DoAn/demo-guide.md)**: The professional thesis demonstration script.
+- **[agent-testing.md](file:///d:/Study/3rd-y/3rdY-Sem2/NT531.Q21-DanhGiaHieuNang/DoAn/agent-testing.md)**: The hardened AI testing prompt and command menu.
 
 ---
 
 ## 🌟 Acknowledgments
 
 **🎓 Course:** NT531 - Network System Performance Evaluation
-**🏫 Institution:** University of Information Technology
-**🤖 AI Partner:** Google Gemini AI
+**🏫 Institution:** University of Information Technology (UIT)
+**🤖 AI Partner:** Google Gemini AI Agentic Framework

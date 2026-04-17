@@ -27,8 +27,8 @@ groups:
           description: "Latency trung binh: {{ $value | humanizeDuration }}"
 
       - alert: HighRequestRate
-        expr: rate(container_network_receive_packets_total{name="target-app"}[30s]) > 10
-        for: 30s
+        expr: sum(rate(flask_http_request_total{job="target-app"}[30s])) > 10
+        for: 15s
         labels:
           severity: warning
           scenario: ddos

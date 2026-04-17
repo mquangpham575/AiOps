@@ -222,3 +222,45 @@ scenarios:
         latency_target: "50-100ms"
       - name: "high_latency"
         latency_target: "> 100ms"
+
+  cpu_flood:
+    name: "CPU Exhaustion (Locust Flood)"
+    description: "App-level CPU stress via Locust flood on /cpu endpoint"
+    iterations: 1
+    duration: 180
+    cooldown: 30
+    injection:
+      method: "locust"
+      locust_profile: "ddos"
+      locust_tags: "cpu_flood"
+    recovery:
+      query: "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100"
+      threshold: 30
+      consecutive_polls: 3
+    alerts:
+      - "ContainerHighCPU"
+    agent_scenario: "cpu_stress"
+    metrics:
+      cpu_container: "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100"
+      memory_container: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
+
+  memory_leak:
+    name: "Memory Exhaustion (Leak Simulation)"
+    description: "Sustained memory allocation via /memory endpoint"
+    iterations: 1
+    duration: 180
+    cooldown: 60
+    injection:
+      method: "locust"
+      locust_profile: "memory"
+      locust_tags: "memory"
+    recovery:
+      query: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
+      threshold: 100
+      consecutive_polls: 3
+    alerts:
+      - "ContainerHighMemory"
+    agent_scenario: "memory_stress"
+    metrics:
+      memory_usage_mb: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
+      memory_pct: "container_memory_usage_bytes{name='target-app'} / container_spec_memory_limit_bytes{name='target-app'} * 100"

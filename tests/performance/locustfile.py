@@ -79,6 +79,12 @@ _PROFILES: dict[str, list[tuple]] = {
         (90, 20, 5),  # peak:     20 users, sustained allocation
         (180, None, 0),  # stop
     ],
+    "cpu_flood": [
+        # Sustained CPU exhaustion via /cpu endpoint
+        (0, 10, 2),   # warm-up
+        (30, 100, 10), # ramp to 100 concurrent hitters
+        (180, None, 0), # stop
+    ],
 }
 
 
@@ -204,6 +210,20 @@ class MemoryStressUser(HttpUser):
     def exhaust_memory(self):
         """Allocate and hold memory — triggers OOM under sustained load."""
         self.client.get(f"/memory?mb={_MEMORY_MB}", name="[MEMORY] GET /memory")
+
+
+class CPUFloodUser(HttpUser):
+    """
+    Dedicated CPU flood user — targets the /cpu endpoint exclusively.
+    """
+    weight = 5
+    wait_time = between(0.01, 0.05)
+
+    @tag("cpu_flood")
+    @task
+    def flood_cpu(self):
+        """Rapid fire /cpu requests."""
+        self.client.get("/cpu", name="[CPU-FLOOD] GET /cpu")
 
 
 class LegitimateUser(HttpUser):

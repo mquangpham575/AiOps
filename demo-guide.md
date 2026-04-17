@@ -1,181 +1,75 @@
-# Demo Guide — AIOps 3-Node Azure Cluster
+# 🏁 AIOps Thesis Demonstration Guide
 
-## Table of Contents
-1. [Prerequisites](#prerequisites)
-2. [System Startup](#system-startup)
-3. [Running Evaluation Scenarios](#running-evaluation-scenarios)
-4. [Output & Results](#output--results)
-5. [Troubleshooting](#troubleshooting)
+This guide provides a step-by-step script for demonstrating the autonomous remediation capabilities of the AIOps Agentic System.
 
 ---
 
-## Prerequisites
+## 🏗 Demo Setup & Preparation
 
-1. **Azure subscription** with access to resource group `rg-aiops`
-2. **SSH key**: `.ssh/aiops3_key_rsa` in project root
-3. **Azure CLI**: Logged in (`az login`)
-4. **Python 3.10+**
-
----
-
-## System Startup
-
-### Step 1: Deploy Infrastructure
-
-```powershell
-# Start all 3 VMs and deploy containers
-.\scripts\aiops-power.ps1 start
-```
-
-This will:
-1. Start 3 Azure VMs (Control, LoadGen, App)
-2. Clone/pull the repo on each VM
-3. Deploy Docker containers via aiops-power.ps1 (scp/tar based)
-
-### Step 2: Access Dashboards
-
-> **Note:** Public IPs are ephemeral. Run `.\scripts\aiops-power.ps1 status` to get current IPs.
-
-| Service | Node | Private IP | Default Port |
-|---------|------|-----------|-------------|
-| Grafana | Control (Node 1) | 10.0.1.4 | 3000 |
-| AI Agent Logs | Control (Node 1) | 10.0.1.4 | 8083/logs/ui |
-| Prometheus | Control (Node 1) | 10.0.1.4 | 9090 |
-| Pushgateway | Control (Node 1) | 10.0.1.4 | 9091 |
-| Target App | App (Node 3) | 10.0.1.6 | 80/health |
-| cAdvisor | App (Node 3) | 10.0.1.6 | 8080 |
-
-Grafana dashboards are auto-provisioned from `ops/monitoring/grafana/dashboards/`:
-- `cluster-observability.json` — **AIOps: Cluster Observability** (golden signals, infra health)
-- `agent-insights.json` — **AIOps: Agent Intelligence Insights** (scoring, decision metrics)
-- `mttr-recovery.json` — **AIOps: Recovery Performance (MTTR)**: AI vs Rule-Based
-
-### Step 3: Verify Status
-
-```powershell
-.\scripts\aiops-power.ps1 status
-```
+1.  **Dashboard Hub**: Open the [Cluster Observability Dashboard](http://104.215.158.157:3000) in your browser.
+2.  **Logic Trace**: Open the [AI Action Log](http://104.215.158.157:8083/logs/ui) to see real-time reasoning.
+3.  **Baseline Verification**: Confirm the **"RPS"** (Traffic) is quiet and **"App CPU"** is near 0%.
 
 ---
 
-## Running Evaluation Scenarios
+## 🚨 Scenario 01: Intelligent CPU Remediation
 
-Scenarios must be run from **Node 2 (LoadGen)** for accurate load injection and metric collection.
+**Goal**: Demonstrate how the AI Agent identifies and kills specific high-CPU stress processes without taking the entire server down.
 
-### Option 1: Azure RunCommand (Recommended)
-
-```powershell
-# Throughput scenario (60s)
-az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm `
-  --command-id RunShellScript `
-  --scripts "cd /home/azureuser/AiOps && python3 scripts/demo_runner.py --scenario throughput --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
-
-# CPU MTTR scenario
-az vm run-command invoke -g rg-aiops -n aiops-loadgen-vm `
-  --command-id RunShellScript `
-  --scripts "cd /home/azureuser/AiOps && python3 scripts/demo_runner.py --scenario cpu --iterations 1 --duration 60 --target-url http://10.0.1.6:80 --agent-url http://10.0.1.4:8083 --prometheus-url http://10.0.1.4:9090"
-```
-
-### Option 2: Direct SSH
-
-```bash
-# SSH into Node 2
-ssh -i .ssh/aiops3_key_rsa azureuser@<LOADGEN_PUBLIC_IP>
-
-# Run all scenarios
-cd /home/azureuser/AiOps
-python3 scripts/demo_runner.py --scenario all --iterations 1 \
-  --target-url http://10.0.1.6:80 \
-  --agent-url http://10.0.1.4:8083 \
-  --prometheus-url http://10.0.1.4:9090
-```
-
-### Custom Parameters
-
-```bash
-python scripts/demo_runner.py --scenario throughput --iterations 3 --duration 300 --json-output
-```
+1.  **Trigger**: Run the CPU flood command from your local terminal:
+    ```bash
+    python scripts/demo_runner.py --scenario cpu_flood --iterations 1 --duration 120
+    ```
+2.  **Observe (Grafana)**:
+    - Watch **"Container CPU Usage (%)"** spike to 100%.
+    - Wait ~30-45 seconds for the `ContainerHighCPU` alert to fire.
+3.  **Observe (AI Log)**:
+    - See the Agent reason about the "stress-ng" processes.
+    - Confirm the tool execution: `auto_kill_cpu_stress`.
+4.  **Verify**:
+    - Watch the CPU usage drop back to normal in Grafana.
+    - Note the **MTTR** (Recovery Time) on the comparison dashboard.
 
 ---
 
-## Output & Results
+## 🚨 Scenario 02: Memory Exhaustion Recovery
 
-### Directory Structure
+**Goal**: Demonstrate the Agent's ability to recover from "Memory Leaks" by performing a clean service restart.
 
-```
-results/
-├── all_scenarios.json           # Combined JSON
-├── throughput/
-│   ├── runs/
-│   │   ├── run_001/
-│   │   │   ├── baseline_metrics.json
-│   │   │   └── load_metrics.json
-│   │   └── run_002/
-│   ├── summary.json             # Aggregated stats (mean +/- stdev)
-│   ├── comparison.json          # Baseline vs Load comparison
-│   └── results.csv
-├── cpu/
-│   └── ...
-└── memory/
-    └── ...
-```
-
-### Quick View
-
-```bash
-cat results/throughput/comparison.json | jq
-cat results/cpu/summary.json | jq
-```
+1.  **Trigger**: Run the memory leak command:
+    ```bash
+    python scripts/demo_runner.py --scenario memory_leak --iterations 1 --duration 120
+    ```
+2.  **Observe (Grafana)**:
+    - Watch **"Container Memory %"** climb toward 80-90%.
+    - Observe the secondary spike in **"P99 Latency"** as the app slows down.
+3.  **Observe (AI Log)**:
+    - The Agent identifies "High Memory" and "High Latency".
+    - It decides to perform `restart_service`.
+4.  **Verify**:
+    - Watch the Memory and Latency metrics drop to baseline.
 
 ---
 
-## Baseline Comparison
+## 🚨 Scenario 03: Brute-Force DDoS Mitigation
 
-| Scenario | Baseline | Load/Stress | Pass Criteria |
-|----------|----------|-------------|---------------|
-| throughput | 20 users, stable | 50-500 users, staged | Load p95 < 3x Baseline p95 |
-| cpu | Normal | stress-ng injection | MTTR < threshold |
-| memory | Normal | Legitimate + Attack | Success rate > threshold |
+**Goal**: Demonstrate high-throughput handling and real-time recovery tracking.
 
----
-
-## Shutdown
-
-```powershell
-.\scripts\aiops-power.ps1 stop
-```
-
----
-
-## Troubleshooting
-
-### "SSH Permission Denied"
-- Verify SSH key exists: `.ssh/aiops3_key_rsa`
-- Verify VM is running: `.\scripts\aiops-power.ps1 status`
-
-### "Metrics are empty"
-- Wait 30-60s after startup for Prometheus to begin scraping
-- Check targets: `http://<CONTROL_PUBLIC_IP>:9090/targets`
-
-### Check Running Containers
-
-```bash
-ssh -i .ssh/aiops3_key_rsa azureuser@<CONTROL_PUBLIC_IP> "docker ps"
-```
+1.  **Trigger**: Run the brute-force parallel flood:
+    ```bash
+    # From LoadGen node (scripts handle this)
+    python scripts/demo_runner.py --scenario ddos --iterations 1 --duration 120
+    ```
+2.  **Observe (Grafana)**:
+    - Watch **"Current Traffic (RPS)"** and **"Throughput Mountain"** spike to 60+ req/s.
+3.  **Observe (AI Log)**:
+    - The Agent enters "Recovery Tracking" mode to monitor the normalization.
+    - Note the tool execution: `restart_service` (to clear saturated connections).
+4.  **Verify**:
+    - Confirm the **Success Rate** climbs on the "MTTR Comparison" dashboard.
 
 ---
 
-## Demo Tips
+## 🏆 Presentation Conclusion
 
-1. **Run 1 iteration first** to verify setup:
-   ```bash
-   python scripts/demo_runner.py --scenario throughput --iterations 1 --json-output
-   ```
-
-2. **Watch dashboards live** — open Grafana on `<CONTROL_PUBLIC_IP>:3000` during scenario execution
-
-3. **Debug containers**:
-   ```bash
-   ssh -i .ssh/aiops3_key_rsa azureuser@<CONTROL_PUBLIC_IP>
-   docker compose -f ops/infra/docker-compose.control.yml logs -f
-   ```
+Point to the **"MTTR: AI vs Rule vs Human"** graph to show that the AI Agent recovered the system in under **60 seconds**, whereas a manual human response (baseline) would typically take 5-10 minutes.

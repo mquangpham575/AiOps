@@ -24,11 +24,30 @@ REMOTE_IP = os.environ.get("AZURE_APP_IP", "10.0.1.6")
 SSH_USER = os.environ.get("SSH_USER", "azureuser")
 
 def _run_remote_docker(command: str) -> str:
-    # Execute a docker command on the remote App Node via SSH.
+    # Execute a docker command on the remote App Node via SSH with permission hardening.
     """Helper to run a docker command on the remote App node via SSH."""
+    key_path = "/root/.ssh/id_rsa"
+    temp_key = "/tmp/id_rsa_agent"
+    
+    # Permission hardening: SSH strictly requires 600 permissions.
+    # Volume mounts from Windows hosts often inherit 644/666 which causes SSH error 255.
+    try:
+        if os.path.exists(key_path):
+            # Use subprocess to copy and chmod to ensure correct OS-level execution
+            subprocess.run(["cp", key_path, temp_key], check=True, capture_output=True)
+            subprocess.run(["chmod", "600", temp_key], check=True, capture_output=True)
+            use_key = temp_key
+        else:
+            use_key = key_path # Fallback to original
+    except Exception as e:
+        logger.warning(f"Failed to harden SSH key permissions: {e}")
+        use_key = key_path
+
     ssh_cmd = [
         "ssh", "-o", "StrictHostKeyChecking=accept-new",
-        "-i", "/root/.ssh/id_rsa",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-i", use_key,
         f"{SSH_USER}@{REMOTE_IP}",
         f"sudo docker {command}"
     ]
@@ -62,7 +81,7 @@ def get_top_processes(container_name: str = None) -> str:
             return f"Cannot get processes for {container_name} (empty output)"
 
         titles = lines[0].split()
-        processes = [l.split() for l in lines[1:] if l.strip()]
+        processes = [line.split() for line in lines[1:] if line.strip()]
 
         # Tìm CPU column index
         try:
@@ -72,8 +91,10 @@ def get_top_processes(container_name: str = None) -> str:
 
         # Sort by CPU descending
         def get_cpu(p):
-            try: return float(p[cpu_idx]) if len(p) > cpu_idx else 0
-            except: return 0
+            try:
+                return float(p[cpu_idx]) if len(p) > cpu_idx else 0
+            except Exception:
+                return 0
 
         sorted_procs = sorted(processes, key=get_cpu, reverse=True)
 
@@ -135,14 +156,11 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
     logger.info(f"[kill_process] Looking for processes matching: {patterns}")
 
     try:
-        # Use docker restart as failsafe method for stress-ng
-        client = _get_docker()
-        container = client.containers.get(container_name)
-
-        # For stress-related processes, restart container is most reliable
+        # Use remote service restart as fail-safe for stress-ng
         if any(stress_pattern in process_name.lower() for stress_pattern in ["stress", "cpu", "load"]):
             output = _run_remote_docker(f"restart {container_name}")
-            if "ERROR" in output: return output
+            if "ERROR" in output:
+                return output
             msg = f"Restarted {container_name} remotely to kill all stress processes ({process_name})"
             logger.info(f"[kill_process] {msg}")
             return msg
@@ -366,7 +384,18 @@ def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 70.0
                     continue
 
         if not high_cpu_processes:
-            return f"No processes using >{cpu_threshold}% CPU found in {container_name}"
+            logger.info(f"[auto_kill_cpu_stress] No processes >{cpu_threshold}%. Falling back to killing top consumer.")
+            # Get the very top process from the lines (skipping header)
+            if len(lines) > 1:
+                parts = lines[1].split()
+                if len(parts) >= 11:
+                    cpu_val = float(parts[2])
+                    pid_val = parts[1]
+                    cmd_val = " ".join(parts[10:])
+                    high_cpu_processes.append((cpu_val, cmd_val, pid_val))
+            
+        if not high_cpu_processes:
+            return f"No processes found in {container_name}."
 
         # Step 3: Auto-kill stress processes
         killed_processes = []

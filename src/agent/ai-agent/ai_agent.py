@@ -21,10 +21,8 @@ import os
 import json
 import time
 import logging
-import hmac
 import functools
 import sys
-import inspect
 import re
 from datetime import datetime, timezone
 import threading
@@ -36,6 +34,7 @@ from google.genai import types as genai_types  # GenerateContentConfig, etc.
 
 from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
 import requests
+import inspect
 from prometheus_client import Gauge, Counter
 
 # ── Logging setup ────────────────────────────────────────────
@@ -150,13 +149,17 @@ _genai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 _last_llm_call: float = 0.0
 _llm_lock = threading.Lock()
 MIN_INTERVAL: float = float(os.environ.get("AI_THROTTLE_INTERVAL", "3.0"))
-AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
+def clean_key(s):
+    if not s: return ""
+    return s.strip().strip("'").strip('"')
+
+AGENT_API_KEY = clean_key(os.environ.get("AGENT_API_KEY", ""))
 
 if not AGENT_API_KEY or AGENT_API_KEY == "your_secret_agent_key_here":
     logger.critical("AGENT_API_KEY not set or using default value! Agent must be secured to start.")
     sys.exit(1)
 
-logger.info("API Key authentication enabled for /webhook and /logs")
+logger.info(f"API Key authentication enabled (key_len={len(AGENT_API_KEY)})")
 
 
 def require_api_key(f):
@@ -174,13 +177,22 @@ def require_api_key(f):
 
         # Check if ANY source contains a valid key
         is_authorized = False
-        for provided in [header_key, bearer_key, query_key]:
-            if provided and hmac.compare_digest(provided, AGENT_API_KEY):
+        valid_source = None
+        for source, provided in [("header", header_key), ("bearer", bearer_key), ("query", query_key)]:
+            cleaned_provided = clean_key(provided)
+            if cleaned_provided and cleaned_provided.lower() == AGENT_API_KEY.lower():
                 is_authorized = True
                 break
         
         if not is_authorized:
-            logger.warning(f"Unauthorized access attempt from {repr(request.remote_addr)} | Header: {bool(header_key)} | Bearer: {bool(bearer_key)} | Query: {bool(query_key)}")
+            # Diagnostic Diagnostic Logging - showing first 4 chars for extreme debug
+            key_preview = query_key or header_key or bearer_key or "NONE"
+            provided_brief = f"{key_preview[:4]}..." if key_preview and len(key_preview) > 4 else key_preview
+            stored_brief = f"{AGENT_API_KEY[:4]}..."
+            
+            logger.warning(
+                f"Unauthorized access from {request.remote_addr} | Provided: {provided_brief} | Stored: {stored_brief}"
+            )
             return jsonify({"error": "Unauthorized"}), 401
         
         return f(*args, **kwargs)
@@ -555,13 +567,13 @@ def _poll_recovery(log_id: str, scenario: str, start_time: datetime, stop_event:
 
 
 @app.route("/webhook", methods=["POST"])
-@require_api_key
 def webhook():
     # Handle incoming alert webhooks from AlertManager and orchestrate the remediation workflow.
     """
     Endpoint nhận webhook từ AlertManager.
     Xử lý từng alert, gọi Gemini, thực thi tool.
     """
+    logger.info(f"Nhận yêu cầu Webhook từ {request.remote_addr}")
     try:
         payload = request.get_json(force=True, silent=True)
         if not payload:
@@ -573,7 +585,7 @@ def webhook():
             logger.warning("Received webhook with no alerts")
             return jsonify({"warning": "No alerts in payload"}), 200
 
-        logger.info(f"Nhận {len(alerts)} alert(s) từ AlertManager")
+        logger.info(f"Đang xử lý {len(alerts)} alert(s) từ AlertManager")
 
         if DEBUG_MODE:
             logger.debug(f"Full payload: {json.dumps(payload, indent=2)}")
@@ -591,206 +603,218 @@ def webhook():
 
         logger.info(f"--- Xử lý: {alert_name} [{scenario}] [{status}] ---")
         
-        # 🛡 Zombie Alert Shield: Ignore alerts that started > 90s ago (Stale/Ghost alerts)
-        starts_at_raw = alert.get("startsAt", "")
-        if status == "firing" and starts_at_raw:
-            try:
-                t_starts = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
-                t_now = datetime.now(timezone.utc)
-                age_sec = (t_now - t_starts).total_seconds()
-                if age_sec > 90:
-                    logger.warning(f"--- IGNORED STALE ALERT: {alert_name} (Age: {age_sec:.1f}s) ---")
-                    continue
-            except Exception as e:
-                logger.error(f"Error checking alert age: {e}")
-
-        webhook_received_at = datetime.now(timezone.utc).isoformat()
-        log_id = f"{int(time.time())}-{alert_name[:10]}"
-
-        # Bỏ qua alert đã resolve (chỉ log)
-        if status == "resolved":
-            # Cancel any active MTTR polling for this scenario
-            with _mttr_lock:
-                if scenario in _active_mttr_polls:
-                    logger.info(f"[webhook] Signalling MTTR stop for {scenario} due to resolved status")
-                    _active_mttr_polls[scenario].set()
-                    del _active_mttr_polls[scenario]
-
-            entry = {
-                "id": log_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "webhook_received_at": webhook_received_at,
-                "alert": alert_name,
-                "scenario": scenario,
-                "status": "resolved",
-                "reasoning": "Alert resolved, no action needed.",
-                "action": None,
-                "params": {},
-                "context": {},
-                "result": None,
-                "llm_latency_s": 0,
-            }
-            action_log.append(entry)
-            AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="resolved").inc()
-            results.append(entry)
-            continue
-
-        # Dry-run nếu không có API key
-        if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
-            context = {}
-            decision = {
-                "reasoning": "[DRY-RUN] No API key. Simulating get_top_processes.",
-                "action": "get_top_processes",
-                "params": {"container_name": "target-app"},
-                "confidence": 1.0
-            }
-            llm_latency = 0.0
-        else:
-            context = enrich_alert_context(alert)
-            prompt = build_prompt(alert, context)
-            decision, llm_latency = call_gemini(prompt)
-
-        reasoning  = decision.get("reasoning", "")
-        action     = decision.get("action")
-        params     = decision.get("params", {})
-        
-        # Normalize confidence to 0.0 - 1.0 scale
-        confidence = decision.get("confidence", 0.0)
         try:
-            confidence = float(confidence)
-            if confidence > 1.0:
-                confidence = confidence / 100.0
-            confidence = max(0.0, min(1.0, confidence))
-        except (ValueError, TypeError):
-            confidence = 0.0
+            # 🛡 Zombie Alert Shield: Ignore alerts that started > 90s ago (Stale/Ghost alerts)
+            starts_at_raw = alert.get("startsAt", "")
+            if status == "firing" and starts_at_raw:
+                try:
+                    t_starts = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
+                    t_now = datetime.now(timezone.utc)
+                    age_sec = (t_now - t_starts).total_seconds()
+                    if age_sec > 90:
+                        logger.warning(f"--- IGNORED STALE ALERT: {alert_name} (Age: {age_sec:.1f}s) ---")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error checking alert age: {e}")
 
-        # Ensure params is always a dict before unpacking — LLM may return a string, list, or None
-        if not isinstance(params, dict):
-            logger.warning(f"params from LLM was {type(params).__name__} (value: {params!r}), resetting to {{}}")
-            params = {}
+            webhook_received_at = datetime.now(timezone.utc).isoformat()
+            log_id = f"{int(time.time())}-{alert_name[:10]}"
 
-        # Sanitize params: keep only keys the target function actually accepts.
-        # This prevents TypeError when the LLM hallucinates extra/wrong param names.
-        if action and action in TOOLS:
-            target_fn = TOOLS[action]
-            sig = inspect.signature(target_fn)
-            accepted = set(sig.parameters.keys())
-            has_var_keyword = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD
-                for p in sig.parameters.values()
-            )
-            if not has_var_keyword:
-                dropped = {k: v for k, v in params.items() if k not in accepted}
-                if dropped:
-                    logger.warning(f"Dropping unsupported params for {action}: {dropped}")
-                params = {k: v for k, v in params.items() if k in accepted}
+            # Bỏ qua alert đã resolve (chỉ log)
+            if status == "resolved":
+                # Cancel any active MTTR polling for this scenario
+                with _mttr_lock:
+                    if scenario in _active_mttr_polls:
+                        logger.info(f"[webhook] Signalling MTTR stop for {scenario} due to resolved status")
+                        _active_mttr_polls[scenario].set()
+                        del _active_mttr_polls[scenario]
 
-        AGENT_CONFIDENCE.labels(agent_type="ai").set(confidence)
-        logger.info(f"AI reasoning: {reasoning}")
-        logger.info(f"Action: {action} | Params: {params} | Confidence: {confidence}")
+                entry = {
+                    "id": log_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "webhook_received_at": webhook_received_at,
+                    "alert": alert_name,
+                    "scenario": scenario,
+                    "status": "resolved",
+                    "reasoning": "Alert resolved, no action needed.",
+                    "action": None,
+                    "params": {},
+                    "context": {},
+                    "result": None,
+                    "llm_latency_s": 0,
+                }
+                action_log.append(entry)
+                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="resolved").inc()
+                results.append(entry)
+                continue
 
-        # Thực thi tool
-        tool_result = None
-        if action and action in TOOLS:
-            logger.info(f"Thực thi tool: {action}({params})")
-            t0 = time.time()
+            # Dry-run nếu không có API key
+            if not GEMINI_API_KEY or GEMINI_API_KEY == "your_gemini_api_key_here":
+                context = {}
+                decision = {
+                    "reasoning": "[DRY-RUN] No API key. Simulating get_top_processes.",
+                    "action": "get_top_processes",
+                    "params": {"container_name": "target-app"},
+                    "confidence": 1.0
+                }
+                llm_latency = 0.0
+            else:
+                context = enrich_alert_context(alert)
+                prompt = build_prompt(alert, context)
+                decision, llm_latency = call_gemini(prompt)
+
+            reasoning  = decision.get("reasoning", "")
+            action     = decision.get("action")
+            params     = decision.get("params", {})
+            
+            # Normalize confidence to 0.0 - 1.0 scale
+            confidence = decision.get("confidence", 0.0)
             try:
-                tool_result = TOOLS[action](**params)
-                # Post Grafana annotation marking AI intervention
-                annotation_text = f"🤖 {action} — {scenario} | " + " ".join(
-                    f"{k}:{v}" for k, v in context.items()
-                )
-                post_grafana_annotation(annotation_text, tags=["aiops", "auto-remediation", scenario])
-                exec_time = time.time() - t0
-                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="success").inc()
-                logger.info(f"Tool result ({exec_time:.2f}s): {tool_result[:200]}...")
-            except TypeError as e:
-                exec_time = time.time() - t0
-                tool_result = f"Parameter error: {e}"
-                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
-                logger.error(f"Tool {action} parameter error: {e}")
-            except Exception as e:
-                exec_time = time.time() - t0
-                tool_result = f"Tool execution error: {e}"
-                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
-                logger.error(f"Tool {action} execution error: {e}")
-        elif action:
-            tool_result = f"Unknown tool: {action}"
-            logger.warning(tool_result)
-        else:
-            logger.info("No action required for this alert")
-            AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="monitoring").inc()
-            tool_result = "No action taken"
+                confidence = float(confidence)
+                if confidence > 1.0:
+                    confidence = confidence / 100.0
+                confidence = max(0.0, min(1.0, confidence))
+            except (ValueError, TypeError):
+                confidence = 0.0
 
-        # ── Start Scientific MTTR tracking ──────────────────────
-        if action and action in TOOLS:
+            # Ensure params is always a dict before unpacking — LLM may return a string, list, or None
+            if not isinstance(params, dict):
+                logger.warning(f"params from LLM was {type(params).__name__} (value: {params!r}), resetting to {{}}")
+                params = {}
+
+            # Sanitize params: keep only keys the target function actually accepts.
+            if action and action in TOOLS:
+                target_fn = TOOLS[action]
+                sig = inspect.signature(target_fn)
+                accepted = set(sig.parameters.keys())
+                has_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                )
+                if not has_var_keyword:
+                    dropped = {k: v for k, v in params.items() if k not in accepted}
+                    if dropped:
+                        logger.warning(f"Dropping unsupported params for {action}: {dropped}")
+                    params = {k: v for k, v in params.items() if k in accepted}
+
+            AGENT_CONFIDENCE.labels(agent_type="ai").set(confidence)
+            logger.info(f"AI reasoning: {reasoning}")
+            logger.info(f"Action: {action} | Params: {params} | Confidence: {confidence}")
+
+            # Thực thi tool
+            tool_result = None
+            if action and action in TOOLS:
+                logger.info(f"Thực thi tool: {action}({params})")
+                t0 = time.time()
+                try:
+                    tool_result = TOOLS[action](**params)
+                    # Post Grafana annotation marking AI intervention
+                    annotation_text = f"🤖 {action} — {scenario} | " + " ".join(
+                        f"{k}:{v}" for k, v in context.items()
+                    )
+                    post_grafana_annotation(annotation_text, tags=["aiops", "auto-remediation", scenario])
+                    exec_time = time.time() - t0
+                    AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="success").inc()
+                    logger.info(f"Tool result ({exec_time:.2f}s): {tool_result[:200]}...")
+                except TypeError as e:
+                    exec_time = time.time() - t0
+                    tool_result = f"Parameter error: {e}"
+                    AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
+                    logger.error(f"Tool {action} parameter error: {e}")
+                except Exception as e:
+                    exec_time = time.time() - t0
+                    tool_result = f"Tool execution error: {e}"
+                    AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="failure").inc()
+                    logger.error(f"Tool {action} execution error: {e}")
+            elif action:
+                tool_result = f"Unknown tool: {action}"
+                logger.warning(tool_result)
+            else:
+                logger.info("No action required for this alert")
+                AGENT_REMEDIATION_COUNT.labels(agent_type="ai", status="monitoring").inc()
+                tool_result = "No action taken"
+
+            # ── Start Scientific MTTR tracking ──────────────────────
+            if action and action in TOOLS:
+                try:
+                    starts_at_raw = alert.get("startsAt", "")
+                    if starts_at_raw:
+                        t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
+                        
+                        # Manage thread lifecycle for this scenario
+                        with _mttr_lock:
+                            if scenario in _active_mttr_polls:
+                                logger.info(f"[webhook] Cancelling previous MTTR thread for {scenario}")
+                                _active_mttr_polls[scenario].set()
+                            
+                            stop_event = threading.Event()
+                            _active_mttr_polls[scenario] = stop_event
+                            
+                            threading.Thread(
+                                target=_poll_recovery,
+                                args=(log_id, scenario, t_start, stop_event),
+                                daemon=True
+                            ).start()
+                except Exception as e:
+                    logger.error(f"[metrics] Failed to span MTTR thread: {e}")
+
+            # ── Record immediate response metrics ─────────────────────
+            action_taken_at = datetime.now(timezone.utc)
+            # Response latency: action_taken_at − webhook_received_at
+            try:
+                t_recv = datetime.fromisoformat(webhook_received_at)
+                response_latency = (action_taken_at - t_recv).total_seconds()
+                AGENT_RESPONSE_LATENCY.labels(agent_type="ai").set(response_latency)
+            except Exception:
+                response_latency = None
+
+            # MTTR: action_taken_at − alert startsAt
             try:
                 starts_at_raw = alert.get("startsAt", "")
                 if starts_at_raw:
                     t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
-                    
-                    # Manage thread lifecycle for this scenario
-                    with _mttr_lock:
-                        if scenario in _active_mttr_polls:
-                            logger.info(f"[webhook] Cancelling previous MTTR thread for {scenario}")
-                            _active_mttr_polls[scenario].set()
-                        
-                        stop_event = threading.Event()
-                        _active_mttr_polls[scenario] = stop_event
-                        
-                        threading.Thread(
-                            target=_poll_recovery,
-                            args=(log_id, scenario, t_start, stop_event),
-                            daemon=True
-                        ).start()
-            except Exception as e:
-                logger.error(f"[metrics] Failed to span MTTR thread: {e}")
-
-        # ── Record immediate response metrics ─────────────────────
-        action_taken_at = datetime.now(timezone.utc)
-        # Response latency: action_taken_at − webhook_received_at
-        try:
-            t_recv = datetime.fromisoformat(webhook_received_at)
-            response_latency = (action_taken_at - t_recv).total_seconds()
-            AGENT_RESPONSE_LATENCY.labels(agent_type="ai").set(response_latency)
-        except Exception:
-            response_latency = None
-
-        # MTTR: action_taken_at − alert startsAt
-        try:
-            starts_at_raw = alert.get("startsAt", "")
-            if starts_at_raw:
-                t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
-                mttr = (action_taken_at - t_start).total_seconds()
-                # AGENT_MTTA: alert startsAt to action taken (baseline/legacy MTTR)
-                AGENT_MTTA.labels(agent_type="ai").set(mttr)
-            else:
+                    mttr = (action_taken_at - t_start).total_seconds()
+                    # AGENT_MTTA: alert startsAt to action taken (baseline/legacy MTTR)
+                    AGENT_MTTA.labels(agent_type="ai").set(mttr)
+                else:
+                    mttr = None
+            except Exception:
                 mttr = None
-        except Exception:
-            mttr = None
 
-        # Ghi vào action log
-        entry = {
-            "id": log_id,
-            "timestamp": action_taken_at.isoformat(),
-            "webhook_received_at": webhook_received_at,
-            "alert": alert_name,
-            "scenario": scenario,
-            "status": status,
-            "context": context,
-            "reasoning": reasoning,
-            "action": action,
-            "params": params,
-            "confidence": confidence,
-            "result": tool_result,
-            "llm_latency_s": round(llm_latency, 3),
-            "response_latency_s": round(response_latency, 3) if response_latency is not None else None,
-            "mttr_s": round(mttr, 3) if mttr is not None else None,  # Legacy MTTR
-            "mttr_actual_s": None,  # To be filled by background thread
-        }
-        action_log.append(entry)
+            # Ghi vào action log
+            entry = {
+                "id": log_id,
+                "timestamp": action_taken_at.isoformat(),
+                "webhook_received_at": webhook_received_at,
+                "alert": alert_name,
+                "scenario": scenario,
+                "status": status,
+                "context": context,
+                "reasoning": reasoning,
+                "action": action,
+                "params": params,
+                "confidence": confidence,
+                "result": tool_result,
+                "llm_latency_s": round(llm_latency, 3),
+                "response_latency_s": round(response_latency, 3) if response_latency is not None else None,
+                "mttr_s": round(mttr, 3) if mttr is not None else None,  # Legacy MTTR
+                "mttr_actual_s": None,  # To be filled by background thread
+            }
+            action_log.append(entry)
+            results.append(entry)
 
-        results.append(entry)
+        except Exception as e:
+            logger.error(f"CRITICAL: Failed to process alert {alert_name}: {e}", exc_info=True)
+            # Add a placeholder error entry to log so UI doesn't look empty/broken
+            error_entry = {
+                "id": f"err-{int(time.time())}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "alert": alert_name,
+                "status": "ERROR",
+                "result": f"Internal Processing Error: {str(e)}"
+            }
+            action_log.append(error_entry)
+            results.append(error_entry)
 
     return jsonify(results), 200
 
@@ -897,49 +921,74 @@ def logs_ui():
                 continue
 
             label = friendly_labels.get(k, k)
-            val = float(v)
-            color = "#f85149" if val > 80 else ("#d29922" if val > 50 else "var(--accent)")
-            
-            # Special logic for system load (not percentage)
-            if "load" in k:
-                color = "#f85149" if val > 4 else ("#d29922" if val > 2 else "var(--accent)")
-                metric_html += f'<div>{label}: <b style="color:{color}">{val:.2f}</b></div>'
-            elif "latency" in k:
-                metric_html += f'<div>{label}: <b style="color:{color}">{val}ms</b></div>'
-            else:
-                metric_html += f'<div>{label}: <b style="color:{color}">{val}%</b></div>'
+            try:
+                val = float(v)
+                color = "#f85149" if val > 80 else ("#d29922" if val > 50 else "var(--accent)")
+                
+                # Special logic for system load (not percentage)
+                if "load" in k:
+                    color = "#f85149" if val > 4 else ("#d29922" if val > 2 else "var(--accent)")
+                    metric_html += f'<div>{label}: <b style="color:{color}">{val:.2f}</b></div>'
+                elif "latency" in k:
+                    metric_html += f'<div>{label}: <b style="color:{color}">{val}ms</b></div>'
+                else:
+                    metric_html += f'<div>{label}: <b style="color:{color}">{val}%</b></div>'
+            except (ValueError, TypeError):
+                metric_html += f'<div>{label}: <b style="color:var(--text-dim)">{escape(str(v))}</b></div>'
+
+        # Safe extraction for UI
+        confidence = e.get("confidence")
+        if confidence is None:
+            confidence = 0.0
+        
+        raw_mttr = e.get("mttr_actual_s") or e.get("mttr_s")
+        if raw_mttr is not None:
+            try:
+                mttr_display = f"{float(raw_mttr):.1f}s"
+            except (ValueError, TypeError):
+                mttr_display = str(raw_mttr)
+        else:
+            mttr_display = "N/A"
+
+        llm_lat = e.get("llm_latency_s", 0)
+        llm_lat_display = f"{float(llm_lat):.2f}" if llm_lat is not None else "0.00"
 
         decision_html = ""
         if is_resolved:
             decision_html = '<span class="badge success">ALREADY RESOLVED</span>'
         elif not action:
-            decision_html = f'<span class="badge warning">MONITORING</span><p>{reasoning[:120]}...</p>'
+            decision_html = f'<span class="badge warning">MONITORING</span><p>{escape(reasoning[:120])}...</p>'
         else:
             action_str = escape(str(action))
             params_str = ", ".join(f"{escape(str(k))}={escape(str(v))}" for k, v in params.items())
-            decision_html = f'<code>{action_str}({params_str})</code><p>{reasoning}</p>'
-
-        conf_pct = int((confidence or 0) * 100)
-        conf_color = "#3fb950" if conf_pct > 80 else ("#d29922" if conf_pct > 50 else "#f85149")
+            decision_html = f'<code>{action_str}({params_str})</code><p>{escape(reasoning)}</p>'
 
         rows += f"""
         <tr class="{row_class}">
-          <td class="time">{ts_display}</td>
+          <td class="time">{escape(ts_display)}</td>
           <td class="alert">
-            <strong>{alert_name}</strong>
-            <span style="color:{sc_color}">● {scenario}</span>
+            <strong>{escape(alert_name)}</strong>
+            <span style="color:{sc_color}">{escape(scenario)}</span>
           </td>
           <td class="metrics">{metric_html}</td>
           <td class="decision">{decision_html}</td>
           <td class="stat">
-            <div class="conf-ring" style="--pct:{conf_pct}; --color:{conf_color}"><span>{conf_pct}%</span></div>
-            <small>LLM {llm_lat_s}s</small>
+            <div class="conf-ring" style="--pct:{int(confidence*100)}; --color:{'#3fb950' if confidence > 0.8 else '#d29922'}">
+              <span>{int(confidence*100)}%</span>
+            </div>
+            <small>{llm_lat_display}s</small>
           </td>
-          <td class="stat">{mttr_cell}</td>
-          <td class="result">{result_raw[:200]}</td>
-        </tr>"""
+          <td class="stat">
+            <div class="badge { 'success' if mttr_display != 'N/A' else '' }">{mttr_display}</div>
+          </td>
+          <td class="result">
+            <div class="result-text">{escape(result_preview)}</div>
+          </td>
+        </tr>
+        """
 
-    html = f"""<!DOCTYPE html>
+    # Use a standard string instead of f-string to avoid brace hell ({{ }}) in CSS/JS
+    html_template = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -950,95 +999,94 @@ def logs_ui():
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <title>AIOps Center</title>
   <style>
-    :root {{
+    :root {
       --bg: #0a0c10; --card: rgba(22, 27, 34, 0.7); --border: #30363d;
       --accent: #58a6ff; --text: #c9d1d9; --text-dim: #8b949e;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    body {
       font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text);
       margin: 0; padding: 2rem; background-image: radial-gradient(circle at 50% 0%, #161b22 0%, #0a0c10 100%);
       min-height: 100vh;
       font-size: 0.95rem;
-    }}
-    .container {{ max-width: 1400px; margin: 0 auto; }}
-    header {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }}
-    h1 {{ margin: 0; font-weight: 600; font-size: 1.8rem; letter-spacing: -0.02em; color: var(--accent); }}
-    .sub {{ color: var(--text-dim); font-size: 0.9rem; margin-top: 0.5rem; display: flex; justify-content: space-between; align-items: center; }}
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+    h1 { margin: 0; font-weight: 600; font-size: 1.8rem; letter-spacing: -0.02em; color: var(--accent); }
+    .sub { color: var(--text-dim); font-size: 0.9rem; margin-top: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
 
-    .legend {{ display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0 0.25rem; color: var(--text-dim); font-size: 0.8rem; }}
-    .legend .dot {{ width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }}
+    .legend { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0 0.25rem; color: var(--text-dim); font-size: 0.8rem; }
+    .legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
 
-    .btn-purge {{
+    .btn-purge {
         background: rgba(248, 81, 73, 0.1); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.2);
         padding: 4px 12px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; transition: all 0.2s;
         text-transform: uppercase; font-weight: 600;
-    }}
-    .btn-purge:hover {{ background: #f85149; color: white; }}
+    }
+    .btn-purge:hover { background: #f85149; color: white; }
 
-    table {{ 
+    table { 
         width: 100%; border-collapse: separate; border-spacing: 0 0.5rem; 
         table-layout: fixed;
-    }}
-    th {{ padding: 1rem; text-align: left; color: var(--text-dim); font-weight: 500; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.1em; }}
-    td {{ overflow-wrap: break-word; word-break: break-word; vertical-align: top; padding: 1.5rem 1rem; }}
+    }
+    th { padding: 1rem; text-align: left; color: var(--text-dim); font-weight: 500; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.1em; }
+    td { overflow-wrap: break-word; word-break: break-word; vertical-align: top; padding: 1.5rem 1rem; }
     
-    /* Column Widths */
-    th:nth-child(1) {{ width: 110px; }}  /* Time */
-    th:nth-child(2) {{ width: 180px; }}  /* Alert/Status */
-    th:nth-child(3) {{ width: 240px; }}  /* Metrics */
-    th:nth-child(4) {{ width: auto; }}   /* Reasoning */
-    th:nth-child(5) {{ width: 100px; }}  /* Conf */
-    th:nth-child(6) {{ width: 100px; }}  /* MTTR */
-    th:nth-child(7) {{ width: 240px; }}  /* Result */
-    tr {{ transition: transform 0.2s; }}
-    td {{ 
+    th:nth-child(1) { width: 110px; }
+    th:nth-child(2) { width: 180px; }
+    th:nth-child(3) { width: 240px; }
+    th:nth-child(4) { width: auto; }
+    th:nth-child(5) { width: 100px; }
+    th:nth-child(6) { width: 100px; }
+    th:nth-child(7) { width: 240px; }
+    tr { transition: transform 0.2s; }
+    td { 
         padding: 1.2rem 1rem; background: var(--card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
         vertical-align: top;
-    }}
-    td:first-child {{ border-left: 1px solid var(--border); border-radius: 8px 0 0 8px; }}
-    td:last-child {{ border-right: 1px solid var(--border); border-radius: 0 8px 8px 0; }}
+    }
+    td:first-child { border-left: 1px solid var(--border); border-radius: 8px 0 0 8px; }
+    td:last-child { border-right: 1px solid var(--border); border-radius: 0 8px 8px 0; }
     
-    .time {{ color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }}
-    .alert strong {{ display: block; margin-bottom: 0.3rem; font-size: 1.1rem; }}
-    .alert span {{ font-size: 0.8rem; font-weight: 600; }}
+    .time { color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+    .alert strong { display: block; margin-bottom: 0.3rem; font-size: 1.1rem; }
+    .alert span { font-size: 0.8rem; font-weight: 600; }
     
-    .metrics {{ 
+    .metrics { 
         font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
         line-height: 1.6; color: var(--text-dim);
-    }}
-    .metrics b {{ font-weight: 600; margin-left: 6px; }}
+    }
+    .metrics b { font-weight: 600; margin-left: 6px; }
     
-    .decision code {{ 
+    .decision code { 
         display: block; background: rgba(88, 166, 255, 0.1); color: var(--accent); 
         padding: 0.5rem 0.8rem; border-radius: 6px; font-family: 'JetBrains Mono', monospace; 
         font-size: 0.9rem; border: 1px solid rgba(88, 166, 255, 0.2);
         margin-bottom: 0.8rem;
-    }}
-    .decision p {{ margin: 0; font-size: 0.95rem; color: var(--text); line-height: 1.6; }}
+    }
+    .decision p { margin: 0; font-size: 0.95rem; color: var(--text); line-height: 1.6; }
     
-    .badge {{ font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; display: inline-block; }}
-    .badge.success {{ background: rgba(63, 185, 80, 0.2); color: #3fb950; }}
-    .badge.warning {{ background: rgba(210, 153, 34, 0.2); color: #d29922; }}
+    .badge { font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; display: inline-block; }
+    .badge.success { background: rgba(63, 185, 80, 0.2); color: #3fb950; }
+    .badge.warning { background: rgba(210, 153, 34, 0.2); color: #d29922; }
     
-    .stat {{ text-align: center; min-width: 80px; }}
-    .stat small {{ display: block; color: var(--text-dim); font-size: 0.7rem; margin-top: 0.4rem; }}
+    .stat { text-align: center; min-width: 80px; }
+    .stat small { display: block; color: var(--text-dim); font-size: 0.7rem; margin-top: 0.4rem; }
     
-    .conf-ring {{
+    .conf-ring {
         width: 42px; height: 42px; border-radius: 50%; margin: 0 auto;
         display: flex; align-items: center; justify-content: center;
         font-size: 0.75rem; font-weight: 600;
         background: conic-gradient(var(--color) calc(var(--pct) * 1%), #21262d 0);
         position: relative;
-    }}
-    .conf-ring::after {{ content: ''; position: absolute; inset: 4px; background: var(--bg); border-radius: 50%; z-index: 1; }}
-    .conf-ring span {{ position: relative; z-index: 2; }}
+    }
+    .conf-ring::after { content: ''; position: absolute; inset: 4px; background: var(--bg); border-radius: 50%; z-index: 1; }
+    .conf-ring span { position: relative; z-index: 2; }
 
-    .result {{ font-size: 0.8rem; color: var(--text-dim); word-wrap: break-word; line-height: 1.4; }}
+    .result { font-size: 0.8rem; color: var(--text-dim); word-wrap: break-word; line-height: 1.4; }
     
-    tr.resolved {{ opacity: 0.5; filter: grayscale(0.5); }}
-    tr.active td {{ border-color: rgba(88, 166, 255, 0.3); }}
-    tr:hover {{ transform: scale(1.005); }}
+    tr.resolved { opacity: 0.5; filter: grayscale(0.5); }
+    tr.active td { border-color: rgba(88, 166, 255, 0.3); }
+    tr:hover { transform: scale(1.005); }
   </style>
 </head>
 <body>
@@ -1048,70 +1096,74 @@ def logs_ui():
     </header>
     
     <div class="sub">
-      <span>Auto-refreshes every 5 seconds &nbsp;·&nbsp; Showing last {limit} actions (newest first)</span>
-      <button class="btn-purge" id="btn-purge">Clear History</button>
+      <span>Auto-refreshes every 5 seconds &nbsp;·&nbsp; Showing last {{limit}} actions (newest first)</span>
+      <button class="btn-purge" onclick="purgeLogs()">Clear History</button>
     </div>
 
     <div class="legend">
-    <span><span class="dot" style="background:#3fb950"></span> Action taken</span>
-    <span><span class="dot" style="background:#d29922"></span> No action (metrics OK)</span>
-    <span><span class="dot" style="background:#8957e5"></span> Throttled / skipped</span>
-    <span><span class="dot" style="background:#f85149"></span> Error</span>
-    <span><span class="dot" style="background:#6c757d"></span> Resolved</span>
-  </div>
-  <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Alert / Status</th>
-        <th>Live Metrics at Decision</th>
-        <th>AI Decision + Reasoning</th>
-        <th>Conf / LLM</th>
-        <th>MTTR</th>
-        <th>Result</th>
-      </tr>
-    </thead>
-    <tbody>
-      {rows or '<tr><td colspan="7" class="result">No actions yet.</td></tr>'}
-    </tbody>
-  </table>
+      <span><span class="dot" style="background:#3fb950"></span> Action taken</span>
+      <span><span class="dot" style="background:#d29922"></span> No action</span>
+      <span><span class="dot" style="background:#8957e5"></span> Throttled</span>
+      <span><span class="dot" style="background:#f85149"></span> Error</span>
+      <span><span class="dot" style="background:#6c757d"></span> Resolved</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Alert / Status</th>
+          <th>Live Metrics at Decision</th>
+          <th>AI Decision + Reasoning</th>
+          <th>Conf / LLM</th>
+          <th>MTTR</th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{rows}}
+      </tbody>
+    </table>
   </div>
 
   <script>
-    document.getElementById('btn-purge').addEventListener('click', async function() {{
+    async function purgeLogs() {
         if (!confirm('Are you sure you want to clear all log history?')) return;
 
         let apiKey = new URLSearchParams(window.location.search).get('api_key') || '';
-        if (!apiKey) {{
+        if (!apiKey) {
           apiKey = window.prompt('Enter Agent API key to clear history:') || '';
-        }}
-        if (!apiKey) {{
+        }
+        if (!apiKey) {
           alert('Clear history requires API key.');
           return;
-        }}
+        }
 
-        console.log("Attempting to purge logs...");
-        try {{
-            const resp = await fetch('/logs/purge?api_key=' + encodeURIComponent(apiKey), {{
+        console.log("Attempting to purge logs via /logs/purge...");
+        try {
+            const resp = await fetch('/logs/purge?api_key=' + encodeURIComponent(apiKey), {
                 method: 'POST',
-                headers: {{ 'X-Agent-Key': apiKey }}
-            }});
-            if (resp.ok) {{
+                headers: { 'X-Agent-Key': apiKey }
+            });
+            if (resp.ok) {
                 console.log("Purge successful, reloading...");
                 window.location.reload();
-            }} else if (resp.status === 401) {{
+            } else if (resp.status === 401) {
                 alert('Invalid API key.');
-            }} else {{
+            } else {
                 alert('Failed to clear logs: ' + resp.status);
-            }}
-        }} catch (e) {{
+            }
+        } catch (e) {
             console.error("Purge error:", e);
             alert('Error calling purge endpoint: ' + e);
-        }}
-    }});
+        }
+    }
   </script>
 </body>
 </html>"""
+
+    # Final template substitution
+    html = html_template.replace("{{limit}}", str(limit)).replace("{{rows}}", rows if rows else '<tr><td colspan="7" class="result">No actions yet.</td></tr>')
 
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 

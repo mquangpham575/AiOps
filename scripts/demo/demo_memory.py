@@ -4,7 +4,7 @@ from demo_engine import BaseDemoRunner
 # Scenario Configuration (Minimalist)
 MEMORY_SCENARIO_CFG = {
     "name": "Demo 2: Memory Remediation Lifecycle",
-    "alerts": ["ContainerHighMemory", "CriticalMemoryLeak"],
+    "alerts": ["ProactiveMemoryExhaustion", "HighMemoryUsage"],
     "agent_scenario": "demo_memory",
     "injection": {
         "method": "stress-ng",

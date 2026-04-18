@@ -1,263 +1,77 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Cấu hình kịch bản đánh giá hiệu năng — NT531 AIOps PoC
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# MỤC TIÊU CHUNG: Tìm cấu hình phù hợp cho hệ thống AIOps
-# thông qua đánh giá hiệu năng đa lần chạy với phân tích thống kê.
-#
-# BASELINE COMPARISON: Intra-run (Phase A vs Phase B trong cùng 1 iteration)
-#   - Mỗi iteration chạy baseline trước, sau đó chạy load
-#   - So sánh latency để xác định degradation
-#   - Pass criteria: Load p95 không vượt quá 3x Baseline p95
-#
-# CÁCH DÙNG:
-#   python scripts/demo_runner.py --scenario all --json-output
-#   python scripts/demo_runner.py --scenario throughput --iterations 3 --duration 300 --json-output
+# THESIS PERFORMANCE AUDIT CONFIGURATION — NT531 AIOps PoC
 # ═══════════════════════════════════════════════════════════════════════════════
 
 defaults:
-  iterations: 1                  # Reduced for debugging
-  duration: 45                   # Shorter phases
-  cooldown: 10                   # Minimal cooldown
-  cooldown_between: 15          # Minimal scenario gap
+  iterations: 1
+  duration: 45
+  cooldown: 10
+  cooldown_between: 15
 
 scenarios:
-  # ── Kịch bản 1: Throughput & Latency ─────────────────────────────────────
-  throughput:
-    name: "Kịch bản 1: Throughput & Latency"
-    description: >
-      Đánh giá hiệu năng hệ thống dưới tải bình thường và tấn công DDoS.
-      So sánh overhead khi có/không có AI Agent hoạt động.
-    goal: >
-      Xác định ngưỡng throughput tối đa, đo latency percentiles (p50/p95/p99),
-      và đánh giá ảnh hưởng của AI Agent lên hiệu năng hệ thống.
-    
-    # Tags cho locust (tham khảo locustfile.py)
-    tags:
-      baseline: "baseline"       # NormalUser tasks
-      load: "ddos"              # NormalUser + AttackUser tasks
-    
-    # Baseline comparison: intra-run
-    baseline_comparison:
-      enabled: true
-      comparison_type: "intra_run"  # Phase A vs Phase B trong cùng 1 iteration
-      phases:
-        baseline_tag: "baseline"
-        load_tag: "ddos"
-      pass_criteria:
-        latency_p95_increase_max: 300  # Load p95 max 3x Baseline p95 (%)
-        error_rate_under_load_max: 5   # Error rate < 5%
-        baseline_p50_max: 50           # Baseline p50 < 50ms (healthy system)
-    
-    evaluation_targets:
-      - "Latency percentiles: p50, p95, p99 (ms)"
-      - "Throughput tối đa (req/s)"
-      - "Tỉ lệ lỗi dưới tải (%)"
-      - "Overhead CPU/Memory của AI Agent"
-      - "Baseline vs Load latency increase (%)"
-    
-    phases:
-      baseline:
-        description: "Tải ổn định — đo hiệu năng nền"
-        locust_profile: "baseline"
-        locust_tags: "baseline"
-        expected_p95: "< 100ms"  # Baseline p95 expectation
-      
-      load:
-        description: "Tải DDoS — đo hiệu năng dưới tấn công"
-        locust_profile: "ddos"
-        locust_tags: "ddos"
-        expected_p95: "< 500ms"  # Load p95 expectation
-    
-    alerts:
-      - "HighRequestLatency"
-      - "HighRequestRate"
-    
-    metrics:
-      latency_query: >
-        rate(flask_http_request_duration_seconds_sum{job="target-app"}[1m])
-        / rate(flask_http_request_duration_seconds_count{job="target-app"}[1m])
-      latency_p50: >
-        histogram_quantile(0.50,
-          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
-      latency_p95: >
-        histogram_quantile(0.95,
-          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
-      latency_p99: >
-        histogram_quantile(0.99,
-          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
-      throughput: >
-        sum(rate(flask_http_request_total{job="target-app"}[2m]))
-      error_rate: >
-        (sum(rate(flask_http_request_total{job="target-app",status=~"5.."}[2m])) or vector(0))
-        / (sum(rate(flask_http_request_total{job="target-app"}[2m])) or vector(1)) * 100
-      cpu_pct: >
-        sum(rate(container_cpu_usage_seconds_total{job="cadvisor-app",name="target-app"}[2m])) * 100
-      agent_cpu: >
-        sum(rate(process_cpu_seconds_total{job="aiops-agent"}[2m])) * 100
-      agent_memory: >
-        sum(process_resident_memory_bytes{job="aiops-agent"})
-
-  # ── Kịch bản 2: CPU Stress Auto-Remediation ──────────────────────────────
-  cpu:
-    name: "Kịch bản 2: CPU Stress Auto-Remediation"
-    description: >
-      So sánh thời gian phát hiện và xử lý sự cố CPU giữa
-      AI Agent (LLM-powered) và Rule-Based Agent.
-    goal: >
-      Đo MTTR (Mean Time To Recovery) cho sự cố CPU stress,
-      so sánh hiệu quả giữa hai phương pháp xử lý tự động.
-    
-    tags:
-      load: "ddos"  # CPU stress được trigger bởi stress-ng, không phải locust
-    
-    evaluation_targets:
-      - "MTTR tổng thể (T3 - T0)"
-      - "Thời gian phát hiện (T1 - T0)"
-      - "Thời gian phản hồi (T2 - T1)"
-      - "Thời gian khắc phục (T3 - T2)"
-      - "Peak CPU% trong sự cố"
-    
-    injection:
-      method: "stress-ng"
-      command: "stress-ng --cpu 4 --timeout {duration}s"
-      container: "target-app"
-    
-    alerts:
-      - "ContainerHighCPU"
-      - "HighCPUUsage"
-      - "CriticalCPUStress"
-    
-    recovery:
-      query: >
-        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
-      threshold: 30  # CPU% phải giảm dưới mức này để coi là phục hồi
-      consecutive_polls: 3
-    
-    metrics:
-      cpu_container: >
-        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
-      cpu_host: >
-        100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)
-      agent_response_latency: "agent_response_latency_seconds"
-      agent_mttr: "agent_mttr_seconds"
-
-  # ── Kịch bản 3: Memory Exhaustion & Trade-off ─────────────────────────────
-  memory:
-    name: "Kịch bản 3: Memory Exhaustion & DDoS Trade-off"
-    description: >
-      Đánh giá hiệu quả của iptables rate limiting trong việc:
-      1. Block DDoS traffic
-      2. Không ảnh hưởng legitimate users
-    goal: >
-      So sánh 3 cấu hình: no limit, limit 100 req/s, limit 20 req/s
-      để tìm điểm cân bằng giữa blocking và collateral damage.
-    
-    tags:
-      legi_attack: "legi_attack"  # LegitimateUser + AttackUser
-    
-    evaluation_targets:
-      - "Legitimate user success rate (%)"
-      - "Attack blocked rate (%)"
-      - "Trade-off: blocking vs collateral damage"
-      - "Optimal rate configuration"
-    
-    # Rate limit configurations to test
-    rate_limits:
-      - name: "no_limit"
-        description: "Không có rate limit"
-        iptables_rule: null
-      - name: "limit_100"
-        description: "Limit 100 req/s per IP"
-        iptables_rule: "--limit 100/second --limit-burst 100"
-      - name: "limit_20"
-        description: "Limit 20 req/s per IP"
-        iptables_rule: "--limit 20/second --limit-burst 20"
-    
-    phases:
-      baseline:
-        description: "Baseline — không có attack"
-        locust_tags: "baseline"
-        duration: 180  # 3 phút baseline
-      attack:
-        description: "Attack — legitimate + attacker users"
-        locust_tags: "legi_attack"
-        duration: 300  # 5 phút attack
-    
-    metrics:
-      legit_success_rate: >
-        sum(rate(flask_http_request_total{job="target-app",name=~"Legit.*",status="200"}[1m]))
-        / sum(rate(flask_http_request_total{job="target-app",name=~"Legit.*"}[1m])) * 100
-      attack_block_rate: >
-        sum(rate(flask_http_request_total{job="target-app",name=~"ATTACK.*",status=~"429|503"}[1m]))
-        / sum(rate(flask_http_request_total{job="target-app",name=~"ATTACK.*"}[1m])) * 100
-      total_throughput: >
-        sum(rate(flask_http_request_total{job="target-app"}[1m]))
-      memory_usage: >
-        container_memory_usage_bytes{name="target-app"}
-        / container_spec_memory_limit_bytes{name="target-app"} * 100
-
-  # ── Kịch bản 4: Network Configuration ──────────────────────────────────────
-  network:
-    name: "Kịch bản 4: Network Configuration Evaluation"
-    description: >
-      Tìm cấu hình mạng phù hợp bằng cách test với các latency
-      và throughput constraints khác nhau.
-    goal: >
-      Xác định optimal network configuration cho AIOps workload.
-    
-    evaluation_targets:
-      - "Optimal latency threshold cho AI response"
-      - "Network overhead của AI Agent"
-      - "SSH tunnel vs direct connection"
-    
-    # Placeholder for future network configuration tests
-    configurations:
-      - name: "low_latency"
-        latency_target: "< 50ms"
-      - name: "medium_latency"
-        latency_target: "50-100ms"
-      - name: "high_latency"
-        latency_target: "> 100ms"
-
-  cpu_flood:
-    name: "CPU Exhaustion (Locust Flood)"
-    description: "App-level CPU stress via Locust flood on /cpu endpoint"
+  # ── THESIS DEMO A: CPU Surgical Remediation ──────────────────────────
+  demo_cpu:
+    name: "Demo A: CPU Surgical Remediation (Baseline -> Chaos -> Stability)"
+    description: "Evaluates AI precision in identifying rogue CPU stressors under load."
+    method: "phased_remediation"
     iterations: 1
-    duration: 180
-    cooldown: 30
-    injection:
-      method: "locust"
-      locust_profile: "ddos"
-      locust_tags: "cpu_flood"
-    recovery:
-      query: "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100"
-      threshold: 30
-      consecutive_polls: 3
-    alerts:
-      - "ContainerHighCPU"
     agent_scenario: "cpu_stress"
+    target_url: "http://4.194.57.3:80"
     metrics:
-      cpu_container: "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100"
-      memory_container: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
+      throughput: "rate(flask_http_request_total[1m])"
+      latency_p95: "flask_http_request_duration_seconds_bucket{le='0.5'}"
+      cpu_container: "container_cpu_usage_seconds_total{name='target-app'}"
+    phases:
+      baseline:
+        duration: 45
+        locust_tags: "baseline"
+      lifecycle:
+        duration: 240
+        locust_tags: "load"
+        inject_fault: "stress_cpu"
+        alerts: ["ContainerHighCPU"]
+        wait_for_remediation: true
 
-  memory_leak:
-    name: "Memory Exhaustion (Leak Simulation)"
-    description: "Sustained memory allocation via /memory endpoint"
+  # ── THESIS DEMO B: Memory Leak Recovery ──────────────────────────────
+  demo_memory:
+    name: "Demo B: Memory Leak Recovery (Baseline -> Chaos -> Stability)"
+    description: "Evaluates AI precision in mitigating memory exhaustion threats."
+    method: "phased_remediation"
     iterations: 1
-    duration: 180
-    cooldown: 60
-    injection:
-      method: "locust"
-      locust_profile: "memory"
-      locust_tags: "memory"
-    recovery:
-      query: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
-      threshold: 100
-      consecutive_polls: 3
-    alerts:
-      - "ContainerHighMemory"
     agent_scenario: "memory_stress"
+    target_url: "http://4.194.57.3:80"
     metrics:
       memory_usage_mb: "container_memory_usage_bytes{name='target-app'} / (1024 * 1024)"
-      memory_pct: "container_memory_usage_bytes{name='target-app'} / container_spec_memory_limit_bytes{name='target-app'} * 100"
+      cpu_container: "container_cpu_usage_seconds_total{name='target-app'}"
+    phases:
+      baseline:
+        duration: 45
+        locust_tags: "baseline"
+      lifecycle:
+        duration: 240
+        locust_tags: "load"
+        inject_fault: "stress_memory"
+        alerts: ["ContainerHighMemory"]
+        wait_for_remediation: true
+
+  # ── THESIS DEMO C: DDoS Autonomous Defense ─────────────────────────────
+  demo_ddos:
+    name: "Demo C: DDoS Autonomous Defense (Baseline -> Chaos -> Stability)"
+    description: "Evaluates AI response to network-level saturation attacks."
+    method: "phased_remediation"
+    iterations: 1
+    agent_scenario: "ddos_attack"
+    target_url: "http://4.194.57.3:80"
+    metrics:
+      throughput: "rate(flask_http_request_total[1m])"
+      attack_block_rate: "sum(increase(iptables_blocked_packets_total[1m]))"
+    phases:
+      baseline:
+        duration: 45
+        locust_tags: "baseline"
+      lifecycle:
+        duration: 300
+        locust_tags: "load"
+        # DDoS fault IS the load tag, so we trigger logic to block
+        alerts: ["HighThroughput", "DDoSDetected"]
+        wait_for_remediation: true

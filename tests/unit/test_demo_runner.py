@@ -31,14 +31,15 @@ def runner():
         "defaults": {"iterations": 1, "duration": 10, "cooldown": 0, "cooldown_between": 0},
         "scenarios": {},
     }
-    return demo_runner.DemoRunner(
-        config=config,
-        target_url="http://localhost:5000",
-        agent_url="http://localhost:8080",
-        prometheus_url="http://localhost:9090",
-        agent_key="test-agent-key-12345",
-        export_file="test_results.csv",
-    )
+    with patch("demo_runner.time.sleep"):
+        yield demo_runner.DemoRunner(
+            config=config,
+            target_url="http://localhost:5000",
+            agent_url="http://localhost:8080",
+            prometheus_url="http://localhost:9090",
+            agent_key="test-agent-key-12345",
+            export_file="test_results.csv",
+        )
 
 
 def test_preflight_all_healthy(runner):
@@ -235,4 +236,151 @@ def test_export_csv(runner, tmp_path):
     assert "throughput" in content
     assert "baseline" in content
     assert "150.2" in content
+
+
+def test_normalize_phase_metrics_maps_aliases_and_tracks_unmapped(runner):
+    raw = {
+        "latency_p95": 0.5,
+        "throughput": 2.34567,
+        "cpu_container": 95.1234,
+        "memory_usage_mb": 538.4,
+    }
+
+    normalized, sources, unmapped = runner._normalize_phase_metrics(raw)
+
+    assert normalized["latency_p95_ms"] == pytest.approx(500.0)
+    assert normalized["throughput_rps"] == pytest.approx(2.3457)
+    assert normalized["cpu_pct"] == pytest.approx(95.1234)
+    assert normalized["memory_pct"] is None
+    assert sources["latency_p95_ms"] == "latency_p95"
+    assert "memory_usage_mb" in unmapped
+
+
+def test_resolve_comparison_phase_pair_prefers_baseline(runner):
+    b, c = runner._resolve_comparison_phase_pair(["baseline", "lifecycle", "stability"])
+    assert b == "baseline"
+    assert c == "lifecycle"
+
+
+def test_comparison_metric_status_handles_summary_strings_and_missing(runner):
+    baseline = {
+        "throughput_rps": "0.50±0.0",
+        "latency_p95_ms": "100.0±0.0",
+        "cpu_pct": None,
+    }
+    load = {
+        "throughput_rps": "0.04±0.0",
+        "latency_p95_ms": "130.0±0.0",
+        "cpu_pct": "95.0±0.0",
+    }
+    cfg = {
+        "metrics": {
+            "throughput": "q1",
+            "cpu_container": "q2",
+            "attack_block_rate": "q3",
+        }
+    }
+
+    status = runner._comparison_metric_status(baseline, load, cfg)
+
+    assert "throughput_rps" in status["comparable_metrics"]
+    assert "latency_p95_ms" in status["comparable_metrics"]
+    assert "cpu_pct" in status["missing_in_baseline"]
+    assert "attack_block_rate" in status["excluded_metrics"]
+
+
+def test_find_agent_action_honors_before_and_filters(runner):
+    after = datetime(2026, 3, 30, 14, 0, 0, tzinfo=timezone.utc)
+    before = datetime(2026, 3, 30, 14, 0, 30, tzinfo=timezone.utc)
+
+    logs = [
+        {
+            "timestamp": "2026-03-30T14:00:10+00:00",
+            "scenario": "cpu_stress",
+            "action": "restart_service",
+            "alert": {"labels": {"alertname": "ContainerHighCPU"}},
+        },
+        {
+            "timestamp": "2026-03-30T14:00:40+00:00",
+            "scenario": "cpu_stress",
+            "action": "auto_kill_cpu_stress",
+            "alert": {"labels": {"alertname": "ContainerHighCPU"}},
+        },
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = logs
+
+    with patch("demo_runner.requests.get", return_value=mock_resp):
+        result = runner.find_agent_action(
+            after=after,
+            before=before,
+            scenario="cpu_stress",
+            actions=["restart_service"],
+            alert_names=["ContainerHighCPU"],
+        )
+
+    assert result is not None
+    assert result["action"] == "restart_service"
+
+
+def test_run_phases_populates_non_empty_comparison(runner):
+    runner.json_output = True
+    runner.iterations = 1
+    runner.duration = 5
+    runner.cooldown = 0
+    runner.cooldown_between = 0
+
+    scenario_cfg = {
+        "name": "demo-test",
+        "description": "",
+        "metrics": {
+            "throughput": "dummy_q",
+            "latency_p95": "dummy_latency",
+            "attack_block_rate": "dummy_block_rate",
+        },
+        "phases": {
+            "baseline": {"duration": 1, "locust_tags": "baseline"},
+            "lifecycle": {"duration": 1, "locust_tags": "load"},
+        },
+    }
+
+    phase_results = [
+        {
+            "scenario": "demo_test",
+            "iteration": 1,
+            "phase": "baseline",
+            "latency_p50_ms": 100.0,
+            "latency_p95_ms": 120.0,
+            "latency_p99_ms": 140.0,
+            "throughput_rps": 1.0,
+            "error_rate_pct": 0.0,
+            "cpu_pct": 5.0,
+            "memory_pct": 10.0,
+        },
+        {
+            "scenario": "demo_test",
+            "iteration": 1,
+            "phase": "lifecycle",
+            "latency_p50_ms": 110.0,
+            "latency_p95_ms": 150.0,
+            "latency_p99_ms": 180.0,
+            "throughput_rps": 0.2,
+            "error_rate_pct": 0.0,
+            "cpu_pct": 20.0,
+            "memory_pct": 20.0,
+        },
+    ]
+
+    with patch.object(runner, "_run_throughput_phase", side_effect=phase_results):
+        runner._run_phases("demo_test", scenario_cfg)
+
+    sc = runner.json_data["scenarios"]["demo_test"]
+    assert sc["comparison"]
+    assert sc["comparison"]["phase_pair"]["baseline"] == "baseline"
+    assert sc["comparison"]["phase_pair"]["comparison"] == "lifecycle"
+    assert "comparable_metrics" in sc["comparison"]
+    assert "excluded_metrics" in sc["comparison"]
+    assert "attack_block_rate" in sc["comparison"]["excluded_metrics"]
+    assert sc["runs"][0]["comparison"]
 

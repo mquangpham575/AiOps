@@ -37,11 +37,11 @@ graph TD
 
 The environment is synchronized across a 3-node Azure VNet (`10.0.1.0/24`).
 
-| Node       | Public IP         | Role                 | Critical Internal Ports                                                         |
-| :--------- | :---------------- | :------------------- | :------------------------------------------------------------------------------ |
-| **Node 1** | `<CONTROL_IP>`    | **Control Plane**    | `3000` (Grafana), `9090` (Promet), `9093` (AM), `9091` (PushGW), `8083` (Agent) |
-| **Node 2** | `<LOADGEN_IP>`    | **Load Generator**   | `8089` (Locust), `9100` (Node Exp)                                              |
-| **Node 3** | `<APP_IP>`        | **Application Node** | `80` (App), `8080` (cAdvisor), `9100` (Node Exp)                                |
+| Node       | Public IP      | Role                 | Critical Internal Ports                                                         |
+| :--------- | :------------- | :------------------- | :------------------------------------------------------------------------------ |
+| **Node 1** | `<CONTROL_IP>` | **Control Plane**    | `3000` (Grafana), `9090` (Promet), `9093` (AM), `9091` (PushGW), `8083` (Agent) |
+| **Node 2** | `<LOADGEN_IP>` | **Load Generator**   | `8089` (Locust), `9100` (Node Exp)                                              |
+| **Node 3** | `<APP_IP>`     | **Application Node** | `80` (App), `8080` (cAdvisor), `9100` (Node Exp)                                |
 
 ---
 
@@ -91,12 +91,12 @@ DoAn/
 
 Comprehensive links to the live observability suite:
 
-| Interface         | URL                                                  | Purpose                            |
-| :---------------- | :--------------------------------------------------- | :--------------------------------- |
-| **Grafana Suite** | `http://<CONTROL_IP>:3000`                           | Full system health dashboards      |
-| **Prometheus UI** | `http://<CONTROL_IP>:9090`                           | Metric targets and alert status    |
-| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui`                   | Real-time Gemini reasoning log     |
-| **AlertManager**  | `http://<CONTROL_IP>:9093`                           | Active incident propagation status |
+| Interface         | URL                                | Purpose                            |
+| :---------------- | :--------------------------------- | :--------------------------------- |
+| **Grafana Suite** | `http://<CONTROL_IP>:3000`         | Full system health dashboards      |
+| **Prometheus UI** | `http://<CONTROL_IP>:9090`         | Metric targets and alert status    |
+| **AI Action Log** | `http://<CONTROL_IP>:8083/logs/ui` | Real-time Gemini reasoning log     |
+| **AlertManager**  | `http://<CONTROL_IP>:9093`         | Active incident propagation status |
 
 ---
 

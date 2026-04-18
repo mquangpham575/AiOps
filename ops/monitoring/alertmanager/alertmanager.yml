@@ -1,5 +1,5 @@
 global:
-  resolve_timeout: 5m
+  resolve_timeout: 30s
 
 route:
   group_by: ["alertname", "scenario"]

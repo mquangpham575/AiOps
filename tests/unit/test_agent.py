@@ -216,4 +216,20 @@ def test_logs_ui_empty_log(agent_module):
 
     assert resp.status_code == 200
     body = resp.data.decode("utf-8")
-    assert "No actions" in body or "empty" in body.lower() or "<tr>" not in body or "no action" in body.lower()
+    assert "No actions yet." in body
+
+
+def test_logs_purge_requires_auth_and_clears(agent_module):
+    """POST /logs/purge requires auth and clears action log with valid key."""
+    agent_module.action_log.clear()
+    agent_module.action_log.append({"alert": "HighCPUUsage"})
+
+    with agent_module.app.test_client() as client:
+        unauthorized = client.post("/logs/purge")
+        assert unauthorized.status_code == 401
+
+        authorized = client.post("/logs/purge", headers={"X-Agent-Key": "test-agent-key-12345"})
+        assert authorized.status_code == 200
+        assert authorized.get_json()["status"] == "success"
+
+    assert len(agent_module.action_log) == 0

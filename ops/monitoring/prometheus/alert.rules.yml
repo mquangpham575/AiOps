@@ -18,7 +18,7 @@ groups:
           rate(flask_http_request_duration_seconds_sum{job="target-app"}[1m])
           /
           rate(flask_http_request_duration_seconds_count{job="target-app"}[1m]) > 1.5
-        for: 10s
+        for: 15s
         labels:
           severity: critical
           scenario: ddos
@@ -36,22 +36,13 @@ groups:
           summary: "Request rate qua cao"
           description: "Rate: {{ $value }} packets/s"
 
-      # - alert: ProactiveCPUSaturation
-      #   expr: predict_linear(node_cpu_seconds_total{mode!="idle"}[15s], 60) > 0.9
-      #   for: 0s
-      #   labels:
-      #     severity: critical
-      #     scenario: cpu_stress
-      #   annotations:
-      #     summary: "PROACTIVE: CPU qua tai trong < 60s"
-      #     description: "Dự đoán CPU sẽ bùng nổ. AI Agent can thiệp ngay."
-
+      # ── Kịch bản CPU Stress ──────────────────────────────────
       - alert: HighCPUUsage
         expr: |
-          100 - (avg by(instance)(
-            rate(node_cpu_seconds_total{mode="idle"}[15s])
-          ) * 100) > 10
-        for: 0s
+          max by(instance, node)(
+            100 - (rate(node_cpu_seconds_total{mode="idle"}[10s]) * 100)
+          ) > 50
+        for: 15s
         labels:
           severity: critical
           scenario: cpu_stress
@@ -61,7 +52,7 @@ groups:
 
       - alert: ProactiveMemoryExhaustion
         expr: predict_linear(container_memory_usage_bytes{name="target-app"}[1m], 120) > container_spec_memory_limit_bytes{name="target-app"}
-        for: 10s
+        for: 15s
         labels:
           severity: critical
           scenario: memory_stress
@@ -73,7 +64,7 @@ groups:
         expr: |
           container_memory_usage_bytes{name="target-app"}
           / container_spec_memory_limit_bytes{name="target-app"} * 100 > 60
-        for: 10s
+        for: 15s
         labels:
           severity: critical
           scenario: memory_stress
@@ -81,13 +72,10 @@ groups:
           summary: "RAM sắp đầy"
           description: "Container memory usage: {{ $value | humanize }}%"
 
-      # ContainerHighCPU: reduced for: to 30s so the 60s stress window has
-      # enough time to satisfy two consecutive 15s evaluation periods above threshold.
-      # Threshold lowered to 70% — stress-ng on a 1-CPU container reliably hits this.
       - alert: ContainerHighCPU
         expr: |
-          rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100 > 70
-        for: 30s
+          rate(container_cpu_usage_seconds_total{name="target-app"}[10s]) * 100 > 50
+        for: 15s
         labels:
           severity: critical
           scenario: cpu_stress
@@ -96,8 +84,8 @@ groups:
           description: "Container CPU: {{ $value | humanize }}%"
 
       - alert: CriticalCPUStress
-        expr: rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100 > 95
-        for: 15s
+        expr: rate(container_cpu_usage_seconds_total{name="target-app"}[10s]) * 100 > 90
+        for: 10s
         labels:
           severity: critical
           scenario: cpu_stress

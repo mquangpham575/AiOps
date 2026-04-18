@@ -185,8 +185,14 @@ switch ($Action) {
         $packagePath = Join-Path $PSScriptRoot "deploy_package.tar.gz"
         
         Write-Host "Creating deployment package..." -ForegroundColor Gray
+        # Use Windows tar.exe explicitly (Git Bash /usr/bin/tar can't handle Windows drive paths like D:\...)
+        $tarExe = Join-Path $env:SystemRoot "System32\\tar.exe"
+        if (-not (Test-Path $tarExe)) {
+            $tarExe = (Get-Command tar.exe -ErrorAction SilentlyContinue).Source
+        }
+        if (-not $tarExe) { $tarExe = "tar" }
         # Exclude flags must come before the items to be packaged on some tar versions
-        tar -czf $packagePath -C $localProjRoot --exclude="ops/infra/terraform" --exclude="__pycache__" --exclude=".git" ops src tests scripts .env
+        & $tarExe -czf $packagePath -C $localProjRoot --exclude="ops/infra/terraform" --exclude="__pycache__" --exclude=".git" ops src tests scripts .env
 
         if ($Target -eq "all" -or $Target -eq "control") {
             Write-Host "`n=== Deploying Control Node ===" -ForegroundColor Cyan

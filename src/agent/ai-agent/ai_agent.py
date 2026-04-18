@@ -29,6 +29,7 @@ import re
 from datetime import datetime, timezone
 import threading
 from collections import deque
+from html import escape
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types as genai_types  # GenerateContentConfig, etc.
@@ -143,7 +144,7 @@ PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not set! Agent will run in dry-run mode.")
 
-_genai_client = genai.Client(api_key=GEMINI_API_KEY)
+_genai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ── Throttle & Auth ───────────────────────────────────────────
 _last_llm_call: float = 0.0
@@ -231,10 +232,10 @@ _ALERT_SCENARIO_MAP = {
 
 # ── Recovery Thresholds (used for scientific MTTR) ───────────
 _RECOVERY_THRESHOLDS = {
-    "cpu_stress":    {"container_cpu": 30.0},  # Wait until CPU < 30%
-    "ddos":          {"latency_ms": 300.0},    # Wait until latency < 300ms
-    "memory_stress": {"memory_pct": 60.0},     # Wait until memory < 60%
-    "system_load":   {"load1": 1.5},           # Wait until load < 1.5
+    "cpu_stress":    {"container_cpu": 30.0},  # Alert at 50%, Recover at 30%
+    "ddos":          {"latency_ms": 500.0},    # Alert at 1500ms, Recover at 500ms
+    "memory_stress": {"memory_pct": 50.0},     # Alert at 60%, Recover at 50%
+    "system_load":   {"load1": 1.5},           # Alert at 4.0, Recover at 1.5
 }
 
 
@@ -583,11 +584,26 @@ def webhook():
 
     results = []
     for alert in alerts:
+        logger.info(f"DEBUG: Nhận Alert Payload: {json.dumps(alert, indent=2)}")
         alert_name = alert.get("labels", {}).get("alertname", "Unknown")
         scenario   = alert.get("labels", {}).get("scenario", "unknown")
         status     = alert.get("status", "firing")
 
         logger.info(f"--- Xử lý: {alert_name} [{scenario}] [{status}] ---")
+        
+        # 🛡 Zombie Alert Shield: Ignore alerts that started > 90s ago (Stale/Ghost alerts)
+        starts_at_raw = alert.get("startsAt", "")
+        if status == "firing" and starts_at_raw:
+            try:
+                t_starts = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
+                t_now = datetime.now(timezone.utc)
+                age_sec = (t_now - t_starts).total_seconds()
+                if age_sec > 90:
+                    logger.warning(f"--- IGNORED STALE ALERT: {alert_name} (Age: {age_sec:.1f}s) ---")
+                    continue
+            except Exception as e:
+                logger.error(f"Error checking alert age: {e}")
+
         webhook_received_at = datetime.now(timezone.utc).isoformat()
         log_id = f"{int(time.time())}-{alert_name[:10]}"
 
@@ -789,6 +805,15 @@ def health():
     })
 
 
+@app.route("/logs/purge", methods=["POST"])
+@require_api_key
+def purge_logs():
+    """Endpoint to clear the action log history."""
+    action_log.clear()
+    logger.info("Action log history cleared by user.")
+    return jsonify({"status": "success", "message": "Log history cleared"}), 200
+
+
 @app.route("/logs")
 @require_api_key
 def logs():
@@ -814,7 +839,12 @@ def logs_ui():
     rows = ""
     for e in reversed(entries):
         raw_ts  = e.get("timestamp", "")
-        ts_display = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
+        try:
+            # Convert UTC ISO string to local time display
+            ts_dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            ts_display = ts_dt.astimezone().strftime("%H:%M:%S")
+        except:
+            ts_display = raw_ts[11:19] if len(raw_ts) >= 19 else raw_ts
 
         # ── MTTR logic ──────────────────────────────────────────
         mttr_legacy = e.get("mttr_s")
@@ -828,36 +858,66 @@ def logs_ui():
             mttr_cell = '<span style="color:#21262d">—</span>'
 
         # ── Core fields ──────────────────────────────────────────
-        alert_name = e.get("alert", "Unknown")
-        scenario   = e.get("scenario", "")
-        status     = e.get("status", "firing")
-        action     = e.get("action")
-        params     = e.get("params") or {}
+        alert_name = escape(str(e.get("alert", "Unknown")))
+        scenario_raw = str(e.get("scenario", ""))
+        scenario = escape(scenario_raw)
+        status = str(e.get("status", "firing"))
+        action = e.get("action")
+        params = e.get("params") if isinstance(e.get("params"), dict) else {}
         confidence = e.get("confidence")
-        llm_lat_s  = e.get("llm_latency_s", 0)
-        reasoning  = e.get("reasoning", "")
-        result_raw = str(e.get("result") or "")
-        ctx        = e.get("context") or {}
+        llm_lat_s = e.get("llm_latency_s", 0)
+        reasoning = escape(str(e.get("reasoning", "")))
+        result_raw_unescaped = str(e.get("result") or "")
+        result_raw = escape(result_raw_unescaped)
+        result_preview = result_raw[:400]
+        ctx = e.get("context") if isinstance(e.get("context"), dict) else {}
 
-        is_resolved   = (status == "resolved")
-        is_error      = action and ("ERROR" in result_raw or "error" in result_raw.lower())
-        
+        is_resolved = status == "resolved"
+        is_error = action and ("ERROR" in result_raw_unescaped or "error" in result_raw_unescaped.lower())
+
         row_class = "resolved" if is_resolved else ("error" if is_error else ("no-action" if not action else "active"))
 
         # ── Formatting ───────────────────────────────────────────
         scenario_colors = {"cpu_stress": "#e3b341", "ddos": "#f85149", "memory_stress": "#d2a8ff", "system_load": "#79c0ff"}
-        sc_color = scenario_colors.get(scenario, "#8b949e")
+        sc_color = scenario_colors.get(scenario_raw, "#8b949e")
 
-        metric_html = "".join(f'<span>{k}:<b>{v}</b></span>' for k, v in ctx.items())
-        
+        # ── Enhanced Metric Visualization ────────────────────────
+        friendly_labels = {
+            "cpu_pct": "Host CPU", "container_cpu": "App CPU", 
+            "load1": "Sys Load (1m)", "load5": "Sys Load (5m)", 
+            "memory_pct": "Node RAM", "container_memory_mb": "App RAM",
+            "memory_available_mb": "Free RAM",
+            "latency_ms": "Latency", "req_rate": "Req Rate"
+        }
+
+        metric_html = ""
+        for k, v in ctx.items():
+            if v == "N/A":
+                metric_html += f'<div>{escape(str(k))}: <span style="color:var(--text-dim)">N/A</span></div>'
+                continue
+
+            label = friendly_labels.get(k, k)
+            val = float(v)
+            color = "#f85149" if val > 80 else ("#d29922" if val > 50 else "var(--accent)")
+            
+            # Special logic for system load (not percentage)
+            if "load" in k:
+                color = "#f85149" if val > 4 else ("#d29922" if val > 2 else "var(--accent)")
+                metric_html += f'<div>{label}: <b style="color:{color}">{val:.2f}</b></div>'
+            elif "latency" in k:
+                metric_html += f'<div>{label}: <b style="color:{color}">{val}ms</b></div>'
+            else:
+                metric_html += f'<div>{label}: <b style="color:{color}">{val}%</b></div>'
+
         decision_html = ""
         if is_resolved:
             decision_html = '<span class="badge success">ALREADY RESOLVED</span>'
         elif not action:
             decision_html = f'<span class="badge warning">MONITORING</span><p>{reasoning[:120]}...</p>'
         else:
-            params_str = ", ".join(f"{k}={v}" for k, v in params.items())
-            decision_html = f'<code>{action}({params_str})</code><p>{reasoning[:130]}...</p>'
+            action_str = escape(str(action))
+            params_str = ", ".join(f"{escape(str(k))}={escape(str(v))}" for k, v in params.items())
+            decision_html = f'<code>{action_str}({params_str})</code><p>{reasoning}</p>'
 
         conf_pct = int((confidence or 0) * 100)
         conf_color = "#3fb950" if conf_pct > 80 else ("#d29922" if conf_pct > 50 else "#f85149")
@@ -872,7 +932,7 @@ def logs_ui():
           <td class="metrics">{metric_html}</td>
           <td class="decision">{decision_html}</td>
           <td class="stat">
-            <div class="conf-ring" style="--pct:{conf_pct}; --color:{conf_color}">{conf_pct}%</div>
+            <div class="conf-ring" style="--pct:{conf_pct}; --color:{conf_color}"><span>{conf_pct}%</span></div>
             <small>LLM {llm_lat_s}s</small>
           </td>
           <td class="stat">{mttr_cell}</td>
@@ -899,17 +959,38 @@ def logs_ui():
       font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text);
       margin: 0; padding: 2rem; background-image: radial-gradient(circle at 50% 0%, #161b22 0%, #0a0c10 100%);
       min-height: 100vh;
+      font-size: 0.95rem;
     }}
     .container {{ max-width: 1400px; margin: 0 auto; }}
-    header {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; }}
-    h1 {{ margin: 0; font-weight: 600; font-size: 2rem; letter-spacing: -0.02em; color: var(--accent); }}
-    .status-bar {{ display: flex; gap: 1.5rem; font-size: 0.9rem; color: var(--text-dim); }}
-    
+    header {{ display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }}
+    h1 {{ margin: 0; font-weight: 600; font-size: 1.8rem; letter-spacing: -0.02em; color: var(--accent); }}
+    .sub {{ color: var(--text-dim); font-size: 0.9rem; margin-top: 0.5rem; display: flex; justify-content: space-between; align-items: center; }}
+
+    .legend {{ display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0 0.25rem; color: var(--text-dim); font-size: 0.8rem; }}
+    .legend .dot {{ width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }}
+
+    .btn-purge {{
+        background: rgba(248, 81, 73, 0.1); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.2);
+        padding: 4px 12px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; transition: all 0.2s;
+        text-transform: uppercase; font-weight: 600;
+    }}
+    .btn-purge:hover {{ background: #f85149; color: white; }}
+
     table {{ 
         width: 100%; border-collapse: separate; border-spacing: 0 0.5rem; 
-        backdrop-filter: blur(12px);
+        table-layout: fixed;
     }}
-    th {{ padding: 1rem; text-align: left; color: var(--text-dim); font-weight: 400; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; }}
+    th {{ padding: 1rem; text-align: left; color: var(--text-dim); font-weight: 500; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.1em; }}
+    td {{ overflow-wrap: break-word; word-break: break-word; vertical-align: top; padding: 1.5rem 1rem; }}
+    
+    /* Column Widths */
+    th:nth-child(1) {{ width: 110px; }}  /* Time */
+    th:nth-child(2) {{ width: 180px; }}  /* Alert/Status */
+    th:nth-child(3) {{ width: 240px; }}  /* Metrics */
+    th:nth-child(4) {{ width: auto; }}   /* Reasoning */
+    th:nth-child(5) {{ width: 100px; }}  /* Conf */
+    th:nth-child(6) {{ width: 100px; }}  /* MTTR */
+    th:nth-child(7) {{ width: 240px; }}  /* Result */
     tr {{ transition: transform 0.2s; }}
     td {{ 
         padding: 1.2rem 1rem; background: var(--card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
@@ -922,12 +1003,19 @@ def logs_ui():
     .alert strong {{ display: block; margin-bottom: 0.3rem; font-size: 1.1rem; }}
     .alert span {{ font-size: 0.8rem; font-weight: 600; }}
     
-    .metrics {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.4rem; min-width: 180px; }}
-    .metrics span {{ font-size: 0.75rem; color: var(--text-dim); display: flex; justify-content: space-between; padding-right: 0.5rem; }}
-    .metrics b {{ color: var(--text); }}
+    .metrics {{ 
+        font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+        line-height: 1.6; color: var(--text-dim);
+    }}
+    .metrics b {{ font-weight: 600; margin-left: 6px; }}
     
-    .decision p {{ margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--text-dim); line-height: 1.4; }}
-    .decision code {{ background: rgba(88, 166, 255, 0.1); color: var(--accent); padding: 0.2rem 0.5rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }}
+    .decision code {{ 
+        display: block; background: rgba(88, 166, 255, 0.1); color: var(--accent); 
+        padding: 0.5rem 0.8rem; border-radius: 6px; font-family: 'JetBrains Mono', monospace; 
+        font-size: 0.9rem; border: 1px solid rgba(88, 166, 255, 0.2);
+        margin-bottom: 0.8rem;
+    }}
+    .decision p {{ margin: 0; font-size: 0.95rem; color: var(--text); line-height: 1.6; }}
     
     .badge {{ font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; display: inline-block; }}
     .badge.success {{ background: rgba(63, 185, 80, 0.2); color: #3fb950; }}
@@ -946,7 +1034,7 @@ def logs_ui():
     .conf-ring::after {{ content: ''; position: absolute; inset: 4px; background: var(--bg); border-radius: 50%; z-index: 1; }}
     .conf-ring span {{ position: relative; z-index: 2; }}
 
-    .result {{ font-size: 0.8rem; color: var(--text-dim); max-width: 250px; overflow: hidden; text-overflow: ellipsis; }}
+    .result {{ font-size: 0.8rem; color: var(--text-dim); word-wrap: break-word; line-height: 1.4; }}
     
     tr.resolved {{ opacity: 0.5; filter: grayscale(0.5); }}
     tr.active td {{ border-color: rgba(88, 166, 255, 0.3); }}
@@ -954,9 +1042,17 @@ def logs_ui():
   </style>
 </head>
 <body>
-  <h1>🤖 AIOps Agent — Live Action Log</h1>
-  <p class="sub">Auto-refreshes every 5 seconds &nbsp;·&nbsp; Showing last {limit} actions (newest first)</p>
-  <div class="legend">
+  <div class="container">
+    <header>
+      <h1>AIOps Agent — Live Action Log</h1>
+    </header>
+    
+    <div class="sub">
+      <span>Auto-refreshes every 5 seconds &nbsp;·&nbsp; Showing last {limit} actions (newest first)</span>
+      <button class="btn-purge" id="btn-purge">Clear History</button>
+    </div>
+
+    <div class="legend">
     <span><span class="dot" style="background:#3fb950"></span> Action taken</span>
     <span><span class="dot" style="background:#d29922"></span> No action (metrics OK)</span>
     <span><span class="dot" style="background:#8957e5"></span> Throttled / skipped</span>
@@ -976,9 +1072,44 @@ def logs_ui():
       </tr>
     </thead>
     <tbody>
-      {rows}
+      {rows or '<tr><td colspan="7" class="result">No actions yet.</td></tr>'}
     </tbody>
   </table>
+  </div>
+
+  <script>
+    document.getElementById('btn-purge').addEventListener('click', async function() {{
+        if (!confirm('Are you sure you want to clear all log history?')) return;
+
+        let apiKey = new URLSearchParams(window.location.search).get('api_key') || '';
+        if (!apiKey) {{
+          apiKey = window.prompt('Enter Agent API key to clear history:') || '';
+        }}
+        if (!apiKey) {{
+          alert('Clear history requires API key.');
+          return;
+        }}
+
+        console.log("Attempting to purge logs...");
+        try {{
+            const resp = await fetch('/logs/purge?api_key=' + encodeURIComponent(apiKey), {{
+                method: 'POST',
+                headers: {{ 'X-Agent-Key': apiKey }}
+            }});
+            if (resp.ok) {{
+                console.log("Purge successful, reloading...");
+                window.location.reload();
+            }} else if (resp.status === 401) {{
+                alert('Invalid API key.');
+            }} else {{
+                alert('Failed to clear logs: ' + resp.status);
+            }}
+        }} catch (e) {{
+            console.error("Purge error:", e);
+            alert('Error calling purge endpoint: ' + e);
+        }}
+    }});
+  </script>
 </body>
 </html>"""
 

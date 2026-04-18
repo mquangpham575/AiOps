@@ -35,8 +35,8 @@ The environment is synchronized across a 3-node Azure VNet (`10.0.1.0/24`).
 
 | Node | Public IP | Role | Critical Internal Ports |
 | :--- | :--- | :--- | :--- |
-| **Node 1** | `104.215.158.157` | **Control Plane** | `3000` (Grafana), `9090` (Promet), `9093` (AM), `8083` (Agent), `9100` (Node Exp) |
-| **Node 2** | `104.215.191.69` | **Load Generator** | `8089` (Locust), `9091` (Pushgateway), `9100` (Node Exp) |
+| **Node 1** | `104.215.158.157` | **Control Plane** | `3000` (Grafana), `9090` (Promet), `9093` (AM), `9091` (PushGW), `8083` (Agent) |
+| **Node 2** | `104.215.191.69` | **Load Generator** | `8089` (Locust), `9100` (Node Exp) |
 | **Node 3** | `4.194.57.3` | **Application Node** | `80` (App), `8080` (cAdvisor), `9100` (Node Exp) |
 
 ---

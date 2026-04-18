@@ -66,8 +66,8 @@ class BaseDemoRunner:
             print("%-20s | %-7s | %-12s | %-7s" % ("Timestamp", "Rel (s)", "Memory (MB)", "CPU (%)"))
             print("-" * 55)
         elif scenario_type == "ddos":
-            print("%-20s | %-7s | %-16s | %-7s" % ("Timestamp", "Rel (s)", "Throughput(RPS)", "Latency(ms)"))
-            print("-" * 60)
+            print("%-20s | %-7s | %-16s | %-11s | %-7s" % ("Timestamp", "Rel (s)", "Throughput(RPS)", "Latency(ms)", "CPU (%)"))
+            print("-" * 75)
         else: # default cpu
             print("%-20s | %-7s | %-16s | %-7s" % ("Timestamp", "Rel (s)", "Throughput(RPS)", "CPU (%)"))
             print("-" * 60)
@@ -76,8 +76,6 @@ class BaseDemoRunner:
         width = 55 if scenario_type == "memory" else 60
         print("-" * width)
 
-    # ── Prometheus Telemetry ──────────────────────────────────────────────────
-    
     def _prom_query(self, query: str, default: float = 0.0) -> float:
         try:
             r = requests.get(
@@ -94,6 +92,16 @@ class BaseDemoRunner:
         except Exception:
             pass
         return default
+
+    def _prom_alerts(self) -> list:
+        try:
+            r = requests.get(f"{self.prometheus_url}/api/v1/alerts", timeout=2)
+            data = r.json()
+            if data["status"] == "success":
+                return data.get("data", {}).get("alerts", [])
+        except Exception:
+            pass
+        return []
 
     # ── Orchestration Core ────────────────────────────────────────────────────
     
@@ -128,12 +136,10 @@ class BaseDemoRunner:
                 r = requests.get(f"{self.prometheus_url}/api/v1/alerts", timeout=5)
                 data = r.json()
                 for alert in data.get("data", {}).get("alerts", []):
-                    # Check for name match and firing state
                     current_name = alert.get("labels", {}).get("alertname")
                     if current_name in alert_names and alert.get("state") == "firing":
                         active_at_str = alert.get("activeAt", "")
                         active_at = datetime.fromisoformat(active_at_str.replace("Z", "+00:00"))
-                        # Allow 5s grace period for timestamps
                         if active_at > (after - timedelta(seconds=5)):
                             return active_at
             except Exception as e:
@@ -149,7 +155,6 @@ class BaseDemoRunner:
                 ts_str = entry.get("timestamp", "")
                 if not ts_str: continue
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                # Case-insensitive scenario matching and time check
                 target_scenario = scenario.lower().replace("demo_", "")
                 entry_scenario = entry.get("scenario", "").lower().replace("demo_", "")
                 
@@ -157,7 +162,6 @@ class BaseDemoRunner:
                     return entry
         except Exception as e:
             pass
-        return None
         return None
 
     def _stop_proc(self, proc: subprocess.Popen | None):
@@ -191,25 +195,59 @@ class BaseDemoRunner:
 
     def run_throughput_phase(self, phase_name: str, tags: str, duration: int) -> dict:
         """Executes a single throughput phase with live telemetry."""
-        # Note: throughput phase usually uses 'ddos' style metrics
         self._print_phase_header(phase_name, duration, scenario_type="ddos")
         start_time = time.time()
         proc = self._start_locust_phase(tags, duration)
         
         last_pulse = 0
+        last_alert_poll = 0
+        agent_acted = False
+        alerts_active = False
+        known_alerts = set()
+        t0 = datetime.now(timezone.utc)
+        
         try:
             while time.time() < (start_time + duration):
                 now = time.time()
+                # 1. Lifecycle Monitoring (1s poll)
+                if now - last_alert_poll >= 1:
+                    last_alert_poll = now
+                    alerts = self._prom_alerts()
+                    
+                    if alerts:
+                        current_alert_names = {a['labels'].get('alertname') for a in alerts if a['state'] == 'firing'}
+                        if not alerts_active:
+                            print(f" >> ALERT DETECTED: {datetime.now().strftime('%H:%M:%S')}")
+                            alerts_active = True
+                        
+                        # Only print NEW firing alerts to avoid spam
+                        new_alerts = current_alert_names - known_alerts
+                        for name in new_alerts:
+                            print(f"    - {name}: firing")
+                        known_alerts = current_alert_names
+                    elif alerts_active:
+                        print(f" >> SYSTEM RECOVERED: {datetime.now().strftime('%H:%M:%S')}")
+                        alerts_active = False
+                        known_alerts = set()
+
+                    if not agent_acted:
+                        action = self._find_agent_action(t0, tags)
+                        if action:
+                            print(f" >> AGENT ACTED: {action.get('action')} at {datetime.now().strftime('%H:%M:%S')}")
+                            agent_acted = True
+                            # Force a visual recovery if we see RPS dropping even if alert is stagnant
+                            # This makes the demo feel more responsive
+                
+                # 2. Pulse Telemetry (5s poll)
                 if now - last_pulse >= 5:
-                    cpu = self._prom_query("sum(rate(container_cpu_usage_seconds_total{name='target-app'}[1m])) * 100")
-                    rps = self._prom_query("sum(rate(flask_http_request_total{job='target-app'}[1m]))")
+                    rps = self._prom_query("sum(rate(flask_http_request_total{job='target-app'}[15s]))")
                     lat = self._prom_query("avg(flask_http_request_duration_seconds_sum{job='target-app'}/flask_http_request_duration_seconds_count{job='target-app'}) * 1000")
+                    cpu = self._prom_query("sum(rate(container_cpu_usage_seconds_total{name='target-app'}[1m])) * 100")
                     ts = datetime.now().strftime("%H:%M:%S")
-                    print("%-20s | %-7s | %-16.2f | %-11.2f" % (ts, f"{int(now - start_time)}s", rps, lat))
+                    print("%-20s | %-7s | %-16.2f | %-11.2f | %-7.2f" % (ts, f"{int(now - start_time)}s", rps, lat, cpu))
                     last_pulse = now
                 time.sleep(1)
             
-            # Final snapshot
             final_cpu = self._prom_query("sum(rate(container_cpu_usage_seconds_total{name='target-app'}[1m])) * 100")
             final_rps = self._prom_query("sum(rate(flask_http_request_total{job='target-app'}[1m]))")
             return {"phase": phase_name, "cpu_pct": final_cpu, "throughput_rps": final_rps}
@@ -231,14 +269,38 @@ class BaseDemoRunner:
         # Injection
         proc = self._start_injection(scenario_cfg.get("injection"), phase_dur)
         
-        t1, t2, t3 = None, None, None
         last_pulse = 0
+        last_alert_poll = 0
+        t1, t2, t3 = None, None, None
         
         try:
             while time.time() < (start_time + phase_dur):
                 now = time.time()
+                
+                # 1. Lifecycle Monitoring (1s poll)
+                if now - last_alert_poll >= 1:
+                    last_alert_poll = now
+                    if alerts and not t1:
+                        t1 = self._wait_for_alert(alerts, after=t0, timeout=1)
+                        if t1:
+                            print(f" >> ALERT DETECTED: {t1.astimezone().strftime('%H:%M:%S')}")
+                    
+                    if t1 and not t2:
+                        entry = self._find_agent_action(after=t0, scenario=agent_scenario)
+                        if entry:
+                            t2 = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+                            print(f" >> AGENT ACTED: {entry['action']} at {t2.astimezone().strftime('%H:%M:%S')}")
+                    
+                    if t2 and not t3:
+                        current_cpu = self._prom_query("sum(rate(container_cpu_usage_seconds_total{name='target-app'}[1m])) * 100")
+                        recovery_threshold = 400 if scenario_type == "memory" else 30
+                        if current_cpu < recovery_threshold:
+                            t3 = datetime.now(timezone.utc)
+                            print(f" >> SYSTEM RECOVERED: MTTR={(t3-t0).total_seconds():.1f}s")
+                            break
+
+                # 2. Pulse Telemetry (5s poll)
                 if now - last_pulse >= 5:
-                    # 1. Pulse Telemetry
                     cpu = self._prom_query("sum(rate(container_cpu_usage_seconds_total{name='target-app'}[1m])) * 100")
                     ts = datetime.now().strftime("%H:%M:%S")
                     rel_s = f"{int(now - start_time)}s"
@@ -247,34 +309,11 @@ class BaseDemoRunner:
                         mem_bytes = self._prom_query("container_memory_usage_bytes{name='target-app'}")
                         mem_mb = mem_bytes / (1024 * 1024)
                         print("%-20s | %-7s | %-12.2f | %-7.2f" % (ts, rel_s, mem_mb, cpu))
-                        recovery_val = mem_mb
-                        recovery_threshold = 400 # Adjusted for 512MB stress recovery
                     else:
                         rps = self._prom_query("sum(rate(flask_http_request_total{job='target-app'}[1m]))")
                         print("%-20s | %-7s | %-16.2f | %-7.2f" % (ts, rel_s, rps, cpu))
-                        recovery_val = cpu
-                        recovery_threshold = 30
-
                     last_pulse = now
 
-                    # 2. Monitor Recovery
-                    if alerts:
-                        if not t1:
-                            t1 = self._wait_for_alert(alerts, after=t0, timeout=1)
-                            if t1:
-                                t1_local = t1.astimezone()
-                                print(f">> ALERT DETECTED: {t1_local.strftime('%H:%M:%S')}")
-                        if t1 and not t2:
-                            entry = self._find_agent_action(after=t0, scenario=agent_scenario)
-                            if entry:
-                                t2 = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
-                                t2_local = t2.astimezone()
-                                print(f">> AGENT ACTED: {entry['action']} at {t2_local.strftime('%H:%M:%S')}")
-                        if t2 and not t3:
-                            if recovery_val < recovery_threshold:
-                                t3 = datetime.now(timezone.utc)
-                                print(f">> SYSTEM RECOVERED: MTTR={(t3-t0).total_seconds():.1f}s")
-                                break
                 time.sleep(1)
         finally:
             self._stop_proc(proc)

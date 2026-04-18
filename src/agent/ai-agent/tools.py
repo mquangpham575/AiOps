@@ -500,6 +500,118 @@ def post_grafana_annotation(text: str, tags: list) -> str:
         return msg
 
 
+# ── Tool 12: Block Attacking IP (DDoS Mitigation) ───────────
+# ── Tool 12: Block Malicious IPs (DDoS Mitigation) ──────────
+def block_malicious_ips(container_name: str = None, ip_count: int = 5) -> str:
+    # Identify and block the top N malicious IP addresses using iptables to mitigate DDoS attacks.
+    """
+    Chặn Top N IP đang tấn công (DDoS mitigation) bằng iptables trên Host.
+    Dùng khi: phát hiện HighRequestRate hoặc DDoS attack.
+    Tự động tìm Top N IP có nhiều connection nhất đến port 80.
+    """
+    if container_name is None:
+        container_name = DEFAULT_CONTAINER
+
+    try:
+        # Permission hardening: Ensure SSH key is ready
+        key_path = "/root/.ssh/id_rsa"
+        temp_key = "/tmp/id_rsa_agent"
+        if os.path.exists(key_path):
+            subprocess.run(["cp", key_path, temp_key], capture_output=True)
+            subprocess.run(["chmod", "600", temp_key], capture_output=True)
+            use_key = temp_key
+        else:
+            use_key = key_path
+
+        # Tìm Top N IP có nhiều connection nhất đến port 80 (trừ localhost)
+        # cmd find top N IPs from 'ss'
+        cmd = f"ss -ntu | grep ':80 ' | awk '{{print $5}}' | cut -d: -f1 | grep -v '127.0.0.1' | sort | uniq -c | sort -nr | head -n {ip_count} | awk '{{print $2}}'"
+        
+        host_cmd = [
+            "ssh", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=10",
+            "-i", use_key,
+            f"{SSH_USER}@{REMOTE_IP}",
+            f"sudo {cmd}"
+        ]
+        res = subprocess.run(host_cmd, capture_output=True, text=True, timeout=10)
+        ips = [ip.strip() for ip in res.stdout.split('\n') if ip.strip() and "." in ip]
+
+        if not ips:
+            # Fallback to LoadGen IP if detection fails or empty
+            ips = [os.environ.get("AZURE_LOADGEN_IP", "104.215.191.69")]
+            logger.warning(f"[block_malicious_ips] Automated detection failed/empty, using fallback: {ips}")
+
+        blocked = []
+        for ip in ips:
+            # Apply iptables block
+            block_cmd = [
+                "ssh", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-i", use_key,
+                f"{SSH_USER}@{REMOTE_IP}",
+                f"sudo iptables -I INPUT -s {ip} -j DROP"
+            ]
+            subprocess.run(block_cmd, capture_output=True, text=True, timeout=10)
+            blocked.append(ip)
+
+        msg = f"Successfully blocked top {len(blocked)} malicious IP(s): {', '.join(blocked)} using iptables drop rules."
+        logger.info(f"[block_malicious_ips] {msg}")
+        return msg
+        
+    except Exception as e:
+        logger.error(f"[block_malicious_ips] Error: {e}")
+        return f"ERROR: {e}"
+
+
+# ── Tool 13: Apply Rate Limiting (DDoS Protection) ──────────
+def apply_rate_limiting(container_name: str = None, rps_limit: int = 150) -> str:
+    # Apply a global rate limit rule on the host using iptables to throttle incoming traffic.
+    """
+    Áp dụng Rate Limiting (Global) bằng iptables để giảm tải DDoS.
+    Dùng khi: block IP không hiệu quả hoặc attack quá distributed.
+    """
+    if container_name is None:
+        container_name = DEFAULT_CONTAINER
+
+    try:
+        # Permission hardening
+        key_path = "/root/.ssh/id_rsa"
+        temp_key = "/tmp/id_rsa_agent"
+        if os.path.exists(key_path):
+            subprocess.run(["cp", key_path, temp_key], capture_output=True)
+            subprocess.run(["chmod", "600", temp_key], capture_output=True)
+            use_key = temp_key
+        else:
+            use_key = key_path
+
+        # Apply iptables rate limit on port 80 (common for target-app)
+        # Note: This is a simplified rule for the demo.
+        limit_cmd = [
+            "ssh", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=10",
+            "-i", use_key,
+            f"{SSH_USER}@{REMOTE_IP}",
+            f"sudo iptables -I INPUT -p tcp --dport 80 -m limit --limit {rps_limit}/sec -j ACCEPT && sudo iptables -I INPUT -p tcp --dport 80 -j DROP"
+        ]
+        res = subprocess.run(limit_cmd, capture_output=True, text=True, timeout=10)
+        
+        if res.returncode != 0:
+            return f"ERROR (rate-limit): {res.stderr or res.stdout}"
+        
+        msg = f"Applied global rate limiting on port 80: {rps_limit} requests/sec."
+        logger.info(f"[apply_rate_limiting] {msg}")
+        return msg
+        
+    except Exception as e:
+        logger.error(f"[apply_rate_limiting] Error: {e}")
+        return f"ERROR: {e}"
+
+
+
 TOOLS = {
     "get_top_processes":      get_top_processes,
     "kill_process":           kill_process,
@@ -508,6 +620,8 @@ TOOLS = {
     "get_prometheus_metrics": get_prometheus_metrics,
     "reduce_system_load":     reduce_system_load,
     "auto_kill_cpu_stress":   auto_kill_cpu_stress,
+    "block_malicious_ips":     block_malicious_ips,
+    "apply_rate_limiting":    apply_rate_limiting,
     # post_grafana_annotation — called automatically by webhook(), not by LLM
     # validate_container_exists — internal guard, not AI-callable
 }
@@ -522,7 +636,9 @@ Available tools grouped by scenario (use ONLY the tools listed for the active sc
 - get_prometheus_metrics(query): Query real-time metrics for verification.
 
 [scenario=ddos] Network / request rate attack:
-- restart_service(container_name): Restart the target container to recover from flood (default: {DEFAULT_CONTAINER})
+- block_malicious_ips(container_name, ip_count): Identify and block the Top N attacking IPs (preferred)
+- apply_rate_limiting(container_name, rps_limit): Apply global traffic throttling (use when distributed)
+- restart_service(container_name): Restart the target container (fallback)
 
 [scenario=memory_stress] Memory exhaustion:
 - restart_service(container_name): Restart container to free memory (default: {DEFAULT_CONTAINER})

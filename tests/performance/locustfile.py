@@ -66,11 +66,9 @@ _PROFILES: dict[str, list[tuple]] = {
         (3600, None, 0),
     ],
     "ddos": [
-        # DDoS simulation: warm-up → ramp → sustained attack
-        (0, 50, 3),  # warm-up:  50 users, ramp at  3/s for ~17s
-        (30, 500, 10),  # ramp:    500 users, ramp at 10/s for ~47s
-        (90, 500, 50),  # peak:    500 users, hold at 50/s for ~8s
-        (180, None, 0),  # stop
+        # Instant spike: 500 users reached at 100/s
+        (0, 500, 100),
+        (120, None, 0),
     ],
     "memory": [
         # Memory exhaustion: sustained allocation to trigger OOM

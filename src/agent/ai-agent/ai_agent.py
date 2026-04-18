@@ -216,7 +216,8 @@ _PROM_QUERIES = {
     },
     "ddos": {
         "req_rate":      "rate(container_network_receive_packets_total{name='target-app'}[30s])",
-        "latency_s":     "rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m]) / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m])",
+        "latency_ms":    "avg(rate(flask_http_request_duration_seconds_sum{job='target-app'}[1m]) / rate(flask_http_request_duration_seconds_count{job='target-app'}[1m])) * 1000",
+        "container_cpu": "rate(container_cpu_usage_seconds_total{name='target-app'}[1m]) * 100",
         "network_bytes": "rate(container_network_receive_bytes_total{name='target-app'}[30s])",
     },
     "memory_stress": {
@@ -297,9 +298,11 @@ def enrich_alert_context(alert: dict) -> dict:
         if key in ("memory_available_b", "container_memory_b") and raw != "N/A":
             new_key = key.replace("_b", "_mb")
             ctx[new_key] = round(raw / (1024 * 1024), 1)
-        # Convert latency from seconds to milliseconds
+        # Convert latency from seconds to milliseconds (handled by rate query already if possible, but keeping safety check)
+        elif key == "latency_ms" and raw != "N/A":
+            ctx["latency_ms"] = round(float(raw), 1)
         elif key == "latency_s" and raw != "N/A":
-            ctx["latency_ms"] = round(raw * 1000, 1)
+            ctx["latency_ms"] = round(float(raw) * 1000, 1)
         else:
             ctx[key] = raw if raw == "N/A" else round(raw, 2)
 
@@ -316,11 +319,12 @@ When you receive an alert with live system metrics, analyze the data and choose 
 RESPONSE RULES (MANDATORY - follow exactly):
 - Respond with ONLY a JSON object — no text, no markdown code fences, no extra formatting.
 - Schema: {{"reasoning": "<analysis>", "action": "<tool_name_only or null>", "params": {{}}, "confidence": <float>}}
-- CRITICAL: "action" must be ONLY the tool name (e.g. "restart_service"), NOT the function call itself. DO NOT include parentheses or arguments in the action field.
+- CRITICAL: "action" must be ONLY the tool name (e.g. "restart_service"), NOT the function call itself.
+- MANDATORY: ALWAYS specify all available parameters in the "params" object based on the tool description and alert context. NEVER provide an empty {{}} for tools that accept parameters (e.g., container_name, cpu_threshold, etc.).
 - Example CORRECT response:
-  {{"reasoning": "High CPU detected at 92%", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}, "confidence": 0.9}}
+  {{"reasoning": "High CPU detected at 92% in container 'target-app'. Applying auto-kill with 80% threshold.", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}, "confidence": 0.9}}
 - Example WRONG response (DO NOT do this):
-  {{"reasoning": "...", "action": "auto_kill_cpu_stress(container_name=...)", "params": {{}}, ...}}  ← WRONG
+  {{"reasoning": "...", "action": "auto_kill_cpu_stress", "params": {{}}, ...}}  ← WRONG (missing parameters)
 - Use null action only if the metrics clearly show the alert has already self-resolved or if values are below operational thresholds.
 - Base your reasoning on the actual metric VALUES provided — mention the numbers.
 - DO NOT act on CPU values below 40% even if an alert is firing (it might be a false positive or transient spike).
@@ -331,8 +335,11 @@ SCENARIO → TOOL MAPPING (STRICT — never mix tools across scenarios):
                           e.g. "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}
                           NEVER use reduce_system_load for cpu_stress.
 
-  scenario=ddos         → ONLY use: restart_service
-                          e.g. "action": "restart_service", "params": {{"container_name": "target-app"}}
+  scenario=ddos         → ONLY use: block_malicious_ips OR apply_rate_limiting OR restart_service
+                          e.g. "action": "block_malicious_ips", "params": {{"container_name": "target-app", "ip_count": 5}}
+                          e.g. "action": "apply_rate_limiting", "params": {{"container_name": "target-app", "rps_limit": 100}}
+                          Use block_malicious_ips if you can identify high-traffic sources.
+                          Use apply_rate_limiting if the attack is highly distributed (many IPs).
 
   scenario=memory_stress → ONLY use: restart_service OR reduce_system_load
                            e.g. "action": "restart_service", "params": {{"container_name": "target-app"}}
@@ -343,7 +350,7 @@ SCENARIO → TOOL MAPPING (STRICT — never mix tools across scenarios):
 
 THRESHOLDS (secondary — scenario mapping takes priority):
 - cpu_stress:    container_cpu > 70% → auto_kill_cpu_stress
-- ddos:          req_rate spike OR latency_ms > 1500 → restart_service
+- ddos:          req_rate spike OR latency_ms > 1500 OR container_cpu > 80% → block_malicious_ips or apply_rate_limiting
 - memory_stress: memory_pct > 75% OR memory_available_mb < 300 → restart_service
 - system_load:   load1 > 3.0 → reduce_system_load
 

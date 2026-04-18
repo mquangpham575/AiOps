@@ -24,24 +24,19 @@ def main():
     for i in range(1, args.iterations + 1):
         print(f"\n[ITERATION {i}/{args.iterations}]")
         
-        # 1. Baseline Phase
-        b_res = runner.run_throughput_phase("BASELINE", "baseline", args.baseline_dur)
-        
-        print(f"\n[COOLDOWN] Waiting 10s for system stabilization...")
+        # 1. Stabilization Wait (10s)
+        print(f"\n[STABILIZATION] Waiting 10s for system ready...")
         time.sleep(10)
         
         # 2. Load Phase
         l_res = runner.run_throughput_phase("LOAD (DDOS)", "ddos", args.load_dur)
         
-        # 3. Comparison
-        cpu_inc = _calc_increase_pct(b_res["cpu_pct"], l_res["cpu_pct"])
-        rps_inc = _calc_increase_pct(b_res["throughput_rps"], l_res["throughput_rps"])
-        
+        # 3. Report
         print(f"\n{'=' * 40}")
-        print(f" COMPARISON RESULTS (Load vs Baseline)")
+        print(f" DEMO 3 FINISHED")
         print(f"{'=' * 40}")
-        print(f" CPU Increase:    {cpu_inc}%")
-        print(f" RPS Increase:    {rps_inc}%")
+        print(f" Peak RPS:       {l_res['throughput_rps']}")
+        print(f" Final CPU:      {l_res['cpu_pct']}%")
         print(f"{'=' * 40}")
 
 if __name__ == "__main__":

@@ -153,24 +153,23 @@ Việc thực hiện nhiều phiên (iterations) liên tiếp nhằm chứng min
 
 **Kịch bản lỗi**: Mô phỏng cuộc tấn công bão hòa lưu lượng bất ngờ thông qua công cụ Locust với cường độ cao.
 
-### 4.1 Thông số vận hành chuẩn (Baseline)
+### 4.1 Các phiên thực nghiệm thực tế (Successive Iterations)
 
-| Timestamp           | Rel (s) | Thông lượng (RPS) | Filter Blocks |
-| :------------------ | :------ | :---------------- | :------------ |
-| 2026-04-18T14:56:54 | 0s      | 0.78              | 0             |
-| 2026-04-18T14:57:04 | 10s     | 0.70              | 0             |
+Việc thực hiện nhiều phiên (iterations) liên tiếp nhằm chứng minh tính ổn định, tin cậy và khả năng tái lập (reproducibility) của hệ thống AIOps trên môi trường thực tế.
 
-### 4.2 Diễn biến vòng đời sự cố (Tấn công -> Phòng thủ)
+#### 4.1.1 Phiên thực nghiệm #1 (p50 Reference)
 
-| Timestamp           | Rel (s) | Thông lượng (RPS) | Filter Blocks | Diễn biến sự kiện        |
-| :------------------ | :------ | :---------------- | :------------ | :----------------------- |
-| 2026-04-18T22:15:30 | 0s      | 0.69              | 0             | Khởi tạo ổn định         |
-| 2026-04-18T22:15:40 | 10s     | **0.69**          | 0             | **Ghi nhận tấn công**    |
-| 2026-04-18T22:15:50 | 20s     | **0.25**          | 0             | **Ngưỡng phát hiện lỗi** |
-| 2026-04-18T22:16:00 | 30s     | **0.01**          | Hoạt động     | **Kích hoạt phòng thủ**  |
-| 2026-04-18T22:16:10 | 40s     | **0.02**          | Hoạt động     | **Thanh lọc lưu lượng**  |
-| 2026-04-18T22:16:30 | 60s     | **0.67**          | Hoạt động     | **Phục hồi hoàn tất**    |
-| 2026-04-18T22:16:40 | 70s     | 0.69              | 0             | Giám sát ổn định         |
+| Timestamp | Rel (s) | Throughput (RPS) | CPU (%)   | Diễn biến sự kiện                  |
+| :-------- | :------ | :--------------- | :-------- | :--------------------------------- |
+| 06:01:10  | 0s      | 0.00             | 0.10      | Trạng thái Baseline (Ổn định)      |
+| 06:01:18  | 8s      | 43.80            | 0.10      | **Phát hiện HighRequestRate**      |
+| 06:01:28  | 18s     | **130.50**       | 25.62     | Tấn công bão hòa (Saturation)      |
+| 06:01:40  | 29s     | **129.60**       | **61.99** | **AI thực thi block_attacking_ip** |
+| 06:01:57  | 47s     | **123.70**       | **92.25** | Tấn công phân tán (Multi-IP)       |
+| 06:03:05  | 115s    | **127.20**       | **99.98** | **Cần cơ chế lọc tải nâng cao**    |
+
+![alt text](demo3-agent-1.png)
+![alt text](demo3-dashboard-1.png)
 
 #### 🔗 Evidence Anchor (Demo 3)
 
@@ -187,13 +186,13 @@ Việc thực hiện nhiều phiên (iterations) liên tiếp nhằm chứng min
 
 **Thống kê theo cửa sổ (demo_ddos)**:
 
-- Mức cơ sở (Baseline): Throughput trung bình **0.69 req/s**.
-- Vòng đời sự cố: Mức thấp nhất khi bị tấn công **0.01 req/s**.
+- Mức cơ sở (Baseline): Throughput trung bình **0.0 - 0.78 req/s**.
+- Vòng đời sự cố: Throughput cao nhất (Peak) **130.05 req/s**.
 
 **Các chỉ số thay đổi (demo_ddos)**:
 
-- Khắc phục Throughput: **0.01 -> 0.67 req/s** (khôi phục 97%).
-- Trạng thái phòng thủ: Được xác minh qua sự phục hồi Throughput tự động dưới tải liên tục.
+- Tương quan tài nguyên: CPU tăng từ **0.1% lên 99.98%** dưới tải cực đại.
+- Hiệu quả phòng thủ: `block_attacking_ip` cô lập 1 phần tải nhưng chưa đủ để dập tắt Multi-IP DDoS (Final CPU ~99%).
 
 **Lưu ý về diễn giải (trace-level)**:
 

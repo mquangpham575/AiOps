@@ -102,6 +102,12 @@ class StagedLoadShape(LoadTestShape):
 
     def tick(self) -> tuple[int, float] | None:
         run_time = self.get_run_time()
+        
+        # Respect --run-time CLI flag if set
+        if hasattr(self.runner.environment.parsed_options, "run_time") and self.runner.environment.parsed_options.run_time:
+            if run_time > self.runner.environment.parsed_options.run_time:
+                return None
+
         # Walk stages in reverse to find the active one
         for start_t, users, spawn_rate in reversed(self._stages):
             if run_time >= start_t:
@@ -149,20 +155,28 @@ class NormalUser(HttpUser):
         self.client.get("/health", name="GET /health")
 
 
-class AttackUser(HttpUser):
+from locust.contrib.fasthttp import FastHttpUser
+
+class AttackUser(FastHttpUser):
     """
-    Attacker — flood attack simulation cho DDoS scenarios.
-
-    Hành vi:
-      - Rapid requests không có think time (wait 0.01-0.05s)
-      - Weight cao (3x normal user) để dominate traffic
-      - Target cả /, /heavy, /cpu endpoints
-
+    Attacker - Extremely aggressive flood for Scenario 1.
+    Uses FastHttp to maximize throughput.
     Tags: ddos, legi_attack
     """
+    wait_time = between(0, 0)
+    weight = 10
 
-    weight = 3
+    @tag("ddos", "cpu_flood")
+    @task
+    def flood_attack(self):
+        self.client.get("/", name="/ (DDOS)")
     wait_time = between(0.01, 0.05)
+
+    @tag("baseline", "ddos", "memory", "cpu_flood", "legi_attack")
+    @task(1)
+    def dummy(self):
+        """No-op task to prevent Locust errors when filtered by tag."""
+        pass
 
     @tag("ddos", "legi_attack")
     @task
@@ -205,6 +219,12 @@ class MemoryStressUser(HttpUser):
     weight = 2
     wait_time = between(0.1, 0.3)
 
+    @tag("baseline", "ddos", "memory", "cpu_flood", "legi_attack")
+    @task(1)
+    def dummy(self):
+        """No-op task to prevent Locust errors when filtered by tag."""
+        pass
+
     @tag("memory")
     @task
     def exhaust_memory(self):
@@ -218,6 +238,12 @@ class CPUFloodUser(HttpUser):
     """
     weight = 5
     wait_time = between(0.01, 0.05)
+
+    @tag("baseline", "ddos", "memory", "cpu_flood", "legi_attack")
+    @task(1)
+    def dummy(self):
+        """No-op task to prevent Locust errors when filtered by tag."""
+        pass
 
     @tag("cpu_flood")
     @task
@@ -244,6 +270,12 @@ class LegitimateUser(HttpUser):
 
     weight = 1
     wait_time = between(1, 2)
+
+    @tag("baseline", "ddos", "memory", "cpu_flood", "legi_attack")
+    @task(1)
+    def dummy(self):
+        """No-op task to prevent Locust errors when filtered by tag."""
+        pass
 
     @tag("legi_attack")
     @task

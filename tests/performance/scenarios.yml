@@ -16,10 +16,10 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 defaults:
-  iterations: 3                  # Số lần chạy mỗi kịch bản (cho reproducibility)
-  duration: 300                 # Thời gian mỗi phase (giây) — 5 phút
-  cooldown: 90                  # Thời gian nghỉ giữa các lần chạy (giây)
-  cooldown_between: 120         # Thời gian nghỉ giữa các kịch bản (giây)
+  iterations: 1                  # Reduced for debugging
+  duration: 45                   # Shorter phases
+  cooldown: 10                   # Minimal cooldown
+  cooldown_between: 15          # Minimal scenario gap
 
 scenarios:
   # ── Kịch bản 1: Throughput & Latency ─────────────────────────────────────
@@ -79,27 +79,24 @@ scenarios:
         / rate(flask_http_request_duration_seconds_count{job="target-app"}[1m])
       latency_p50: >
         histogram_quantile(0.50,
-          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
       latency_p95: >
         histogram_quantile(0.95,
-          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
       latency_p99: >
         histogram_quantile(0.99,
-          rate(flask_http_request_duration_seconds_bucket{job="target-app"}[1m]))
+          sum(rate(flask_http_request_duration_seconds_bucket{job="target-app"}[2m])) by (le))
       throughput: >
-        sum(rate(flask_http_request_total{job="target-app"}[1m]))
+        sum(rate(flask_http_request_total{job="target-app"}[2m]))
       error_rate: >
-        sum(rate(flask_http_request_total{job="target-app",status=~"5.."}[1m]))
-        / sum(rate(flask_http_request_total{job="target-app"}[1m])) * 100
+        (sum(rate(flask_http_request_total{job="target-app",status=~"5.."}[2m])) or vector(0))
+        / (sum(rate(flask_http_request_total{job="target-app"}[2m])) or vector(1)) * 100
       cpu_pct: >
-        rate(container_cpu_usage_seconds_total{name="target-app"}[1m]) * 100
-      memory_pct: >
-        container_memory_usage_bytes{name="target-app"}
-        / container_spec_memory_limit_bytes{name="target-app"} * 100
+        sum(rate(container_cpu_usage_seconds_total{job="cadvisor-app",name="target-app"}[2m])) * 100
       agent_cpu: >
-        rate(container_cpu_usage_seconds_total{name="aiops-agent"}[1m]) * 100
+        sum(rate(process_cpu_seconds_total{job="aiops-agent"}[2m])) * 100
       agent_memory: >
-        container_memory_usage_bytes{name="aiops-agent"}
+        sum(process_resident_memory_bytes{job="aiops-agent"})
 
   # ── Kịch bản 2: CPU Stress Auto-Remediation ──────────────────────────────
   cpu:
@@ -163,7 +160,7 @@ scenarios:
       - "Legitimate user success rate (%)"
       - "Attack blocked rate (%)"
       - "Trade-off: blocking vs collateral damage"
-      - "Optimal rate limit configuration"
+      - "Optimal rate configuration"
     
     # Rate limit configurations to test
     rate_limits:

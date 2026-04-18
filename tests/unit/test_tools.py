@@ -1,7 +1,3 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agent'))
-
-import pytest
 from unittest.mock import patch, MagicMock
 import tools
 
@@ -49,10 +45,10 @@ def test_post_grafana_annotation_failure(monkeypatch):
 
 
 def test_utility_tools_not_in_agent_tools():
-    """get_prometheus_metrics and validate_container_exists are
-    internal utilities — not AI-callable tools.
-    They remain as functions but must NOT appear in TOOLS."""
-    assert "get_prometheus_metrics" not in tools.TOOLS
+    """get_prometheus_metrics is now an AI-callable tool.
+    validate_container_exists remains an internal utility."""
+    import tools
+    assert "get_prometheus_metrics" in tools.TOOLS
     assert "validate_container_exists" not in tools.TOOLS
     # Confirm the functions still exist as utilities
     assert callable(tools.get_prometheus_metrics)

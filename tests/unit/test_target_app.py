@@ -1,8 +1,9 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'target-app'))
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src', 'app', 'target-app'))
 
 import pytest
-from app import app as flask_app
+from app import app as flask_app  # type: ignore
 
 
 @pytest.fixture

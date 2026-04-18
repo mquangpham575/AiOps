@@ -1,9 +1,5 @@
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'agent'))
-
 import pytest
 from unittest.mock import patch, MagicMock
-import json
 
 
 def _make_prom_response(value):
@@ -22,8 +18,11 @@ def _make_alert(alertname="HighCPUUsage", scenario="cpu_stress", severity="criti
 
 @pytest.fixture
 def agent_module():
-    import agent
-    return agent
+    import sys
+    if "ai_agent" in sys.modules:
+        del sys.modules["ai_agent"]
+    import ai_agent  # type: ignore
+    return ai_agent
 
 
 def test_enrich_alert_context_cpu(agent_module):
@@ -35,7 +34,7 @@ def test_enrich_alert_context_cpu(agent_module):
         _make_prom_response(2.1),    # load5
         _make_prom_response(91.0),   # container_cpu
     ]
-    with patch("agent._requests.get", mock_get):
+    with patch("ai_agent.requests.get", mock_get):
         ctx = agent_module.enrich_alert_context(_make_alert(scenario="cpu_stress"))
 
     assert ctx["cpu_pct"] == pytest.approx(94.2)
@@ -51,7 +50,7 @@ def test_enrich_alert_context_ddos(agent_module):
         _make_prom_response(2.34),    # latency_s → converted to ms
         _make_prom_response(1048576), # network_bytes
     ]
-    with patch("agent._requests.get", mock_get):
+    with patch("ai_agent.requests.get", mock_get):
         ctx = agent_module.enrich_alert_context(_make_alert(alertname="HighRequestRate", scenario="ddos"))
 
     assert ctx["req_rate"] == pytest.approx(847.0)
@@ -66,7 +65,7 @@ def test_enrich_alert_context_memory(agent_module):
         _make_prom_response(210 * 1024 * 1024),     # available bytes → MB
         _make_prom_response(195 * 1024 * 1024),     # container memory bytes → MB
     ]
-    with patch("agent._requests.get", mock_get):
+    with patch("ai_agent.requests.get", mock_get):
         ctx = agent_module.enrich_alert_context(_make_alert(scenario="memory_stress"))
 
     assert ctx["memory_pct"] == pytest.approx(88.0)
@@ -75,7 +74,7 @@ def test_enrich_alert_context_memory(agent_module):
 
 def test_enrich_alert_context_prometheus_timeout(agent_module):
     """Returns N/A fallback for all metrics if Prometheus is unreachable."""
-    with patch("agent._requests.get", side_effect=Exception("timeout")):
+    with patch("ai_agent.requests.get", side_effect=Exception("timeout")):
         ctx = agent_module.enrich_alert_context(_make_alert(scenario="cpu_stress"))
 
     assert ctx["cpu_pct"] == "N/A"
@@ -106,7 +105,6 @@ def test_build_prompt_no_hardcoded_action(agent_module):
 
 def test_webhook_two_phase_pipeline(agent_module):
     """webhook() calls enrich_alert_context before build_prompt (two-phase pipeline)."""
-    from flask import Flask
 
     payload = {
         "alerts": [{
@@ -125,10 +123,10 @@ def test_webhook_two_phase_pipeline(agent_module):
     }
 
     with (
-        patch("agent.enrich_alert_context", return_value={"cpu_pct": 94.2, "load1": 3.8}) as mock_enrich,
-        patch("agent.call_gemini", return_value=(mock_decision, 1.4)) as mock_gemini,
-        patch("agent.TOOLS", {"auto_kill_cpu_stress": MagicMock(return_value="Killed 2 processes")}),
-        patch("agent.post_grafana_annotation", return_value="OK"),
+        patch("ai_agent.enrich_alert_context", return_value={"cpu_pct": 94.2, "load1": 3.8}) as mock_enrich,
+        patch("ai_agent.call_gemini", return_value=(mock_decision, 1.4)) as mock_gemini,
+        patch("ai_agent.TOOLS", {"auto_kill_cpu_stress": MagicMock(return_value="Killed 2 processes")}),
+        patch("ai_agent.post_grafana_annotation", return_value="OK"),
     ):
         with agent_module.app.test_client() as client:
             resp = client.post(
@@ -162,10 +160,10 @@ def test_webhook_mttr_field_present(agent_module):
                      "params": {"container_name": "target-app"}, "confidence": 0.9}
 
     with (
-        patch("agent.enrich_alert_context", return_value={"req_rate": 847.0, "latency_ms": 2100.0}),
-        patch("agent.call_gemini", return_value=(mock_decision, 2.1)),
-        patch("agent.TOOLS", {"restart_service": MagicMock(return_value="Restarted container: target-app")}),
-        patch("agent.post_grafana_annotation", return_value="OK"),
+        patch("ai_agent.enrich_alert_context", return_value={"req_rate": 847.0, "latency_ms": 2100.0}),
+        patch("ai_agent.call_gemini", return_value=(mock_decision, 2.1)),
+        patch("ai_agent.TOOLS", {"restart_service": MagicMock(return_value="Restarted container: target-app")}),
+        patch("ai_agent.post_grafana_annotation", return_value="OK"),
     ):
         with agent_module.app.test_client() as client:
             resp = client.post(
@@ -206,7 +204,7 @@ def test_logs_ui_returns_html(agent_module):
     body = resp.data.decode("utf-8")
     assert "HighCPUUsage" in body
     assert "auto_kill_cpu_stress" in body
-    assert "0.95" in body
+    assert "95%" in body
 
 
 def test_logs_ui_empty_log(agent_module):

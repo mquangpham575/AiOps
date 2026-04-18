@@ -17,8 +17,8 @@ import logging
 from datetime import datetime, timezone
 from collections import deque
 import threading
-
-import docker
+import subprocess
+import hmac
 from flask import Flask, request, jsonify
 from prometheus_client import Gauge, Counter
 
@@ -71,16 +71,45 @@ AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="failure").inc(0)
 AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="resolved").inc(0)
 AGENT_REMEDIATION_COUNT.labels(agent_type="rule", status="monitoring").inc(0)
 
-# ── Docker client ────────────────────────────────────────────
-_docker_client = None
+# ── SSH Remote Execution ──────────────────────────────────────
+REMOTE_IP = os.environ.get("AZURE_APP_IP", "10.0.1.6")
+SSH_USER = os.environ.get("SSH_USER", "azureuser")
+SSH_PORT = os.environ.get("SSH_PORT", "22")
 DEFAULT_CONTAINER = os.environ.get("TARGET_CONTAINER_NAME", "target-app")
 
+def _run_remote_docker(command: str) -> str:
+    """Helper to run a docker command on the remote App node via SSH."""
+    key_path = "/root/.ssh/id_rsa"
+    temp_key = "/tmp/id_rsa_rule"
+    
+    try:
+        if os.path.exists(key_path):
+            # Permission hardening: SSH strictly requires 600 permissions.
+            subprocess.run(["cp", key_path, temp_key], check=True, capture_output=True)
+            subprocess.run(["chmod", "600", temp_key], check=True, capture_output=True)
+            use_key = temp_key
+        else:
+            use_key = key_path # Fallback
+    except Exception as e:
+        logger.warning(f"Failed to harden SSH key permissions: {e}")
+        use_key = key_path
 
-def _get_docker():
-    global _docker_client
-    if _docker_client is None:
-        _docker_client = docker.from_env()
-    return _docker_client
+    ssh_cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-p", SSH_PORT,
+        "-i", use_key,
+        f"{SSH_USER}@{REMOTE_IP}",
+        f"sudo docker {command}"
+    ]
+    try:
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return f"ERROR (code {result.returncode}): {result.stderr or result.stdout}"
+        return result.stdout.strip()
+    except Exception as e:
+        return f"SSH ERROR: {e}"
 
 
 # ── Rule table ───────────────────────────────────────────────
@@ -126,10 +155,11 @@ def restart_service(container_name: str = None) -> str:
     if container_name is None:
         container_name = DEFAULT_CONTAINER
     try:
-        client = _get_docker()
-        container = client.containers.get(container_name)
-        container.restart(timeout=10)
-        msg = f"Restarted container: {container_name}"
+        output = _run_remote_docker(f"restart {container_name}")
+        if "ERROR" in output:
+            logger.error(f"[restart_service] {output}")
+            return output
+        msg = f"Restarted container remotely: {container_name}"
         logger.info(f"[restart_service] {msg}")
         return msg
     except Exception as e:
@@ -139,10 +169,11 @@ def restart_service(container_name: str = None) -> str:
 
 def reduce_system_load() -> str:
     try:
-        client = _get_docker()
-        container = client.containers.get(DEFAULT_CONTAINER)
-        container.restart(timeout=10)
-        msg = f"Restarted {DEFAULT_CONTAINER} to reduce load"
+        output = _run_remote_docker(f"restart {DEFAULT_CONTAINER}")
+        if "ERROR" in output:
+            logger.error(f"[reduce_system_load] {output}")
+            return output
+        msg = f"Restarted {DEFAULT_CONTAINER} remotely to reduce load"
         logger.info(f"[reduce_system_load] {msg}")
         return msg
     except Exception as e:
@@ -157,7 +188,6 @@ ACTIONS = {
 
 
 # ── Action executor auth ─────────────────────────────────────
-import hmac
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 
 def require_api_key(f):
@@ -169,7 +199,7 @@ def require_api_key(f):
         if not provided and auth_header.startswith("Bearer "):
             provided = auth_header.split(" ")[-1]
         if not AGENT_API_KEY or not hmac.compare_digest(provided, AGENT_API_KEY):
-            logger.warning(f"Unauthorized access attempt to rule-based agent")
+            logger.warning("Unauthorized access attempt to rule-based agent")
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated

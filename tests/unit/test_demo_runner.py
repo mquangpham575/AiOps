@@ -1,6 +1,8 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
+import demo_runner  # type: ignore
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
@@ -25,7 +27,6 @@ def _make_alerts_response(alertname: str, active_at: str, state: str = "firing")
 
 @pytest.fixture
 def runner():
-    import demo_runner
     config = {
         "defaults": {"iterations": 1, "duration": 10, "cooldown": 0, "cooldown_between": 0},
         "scenarios": {},
@@ -133,7 +134,6 @@ def test_wait_for_alert_fired_found(runner):
 
 def test_wait_for_alert_fired_ignores_old_alert(runner):
     """Returns None when the alert's activeAt is before `after` (pre-existing alert)."""
-    import demo_runner
     after = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
     mock_resp = MagicMock()
     mock_resp.json.return_value = _make_alerts_response(
@@ -149,7 +149,6 @@ def test_wait_for_alert_fired_ignores_old_alert(runner):
 
 def test_wait_for_alert_fired_timeout(runner):
     """Returns None when no alert fires within timeout."""
-    import demo_runner
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"data": {"alerts": []}}
 
@@ -166,7 +165,6 @@ def test_wait_for_alert_fired_timeout(runner):
 
 def test_wait_for_recovery_requires_consecutive(runner):
     """Single dip below threshold does NOT declare recovery; 3 consecutive polls do."""
-    import demo_runner
     # Values: above, below (bounce), above, below, below, below (3 consecutive → recovery)
     values = [80.0, 20.0, 80.0, 20.0, 20.0, 20.0]
     call_count = 0
@@ -192,7 +190,6 @@ def test_wait_for_recovery_requires_consecutive(runner):
 
 def test_wait_for_recovery_timeout(runner):
     """Returns None when metric never sustains below threshold within timeout."""
-    import demo_runner
     mock_resp = MagicMock()
     mock_resp.json.return_value = _make_prom_response(95.0)  # always above threshold
 

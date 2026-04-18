@@ -7,7 +7,6 @@ Agent sẽ chọn tool phù hợp dựa trên reasoning của Gemini.
 
 import logging
 import requests
-import docker
 import os
 import time
 
@@ -167,11 +166,12 @@ def kill_process(container_name: str = None, process_name: str = "stress-ng") ->
 
         # For other processes, try remote process matching
         output = _run_remote_docker(f"top {container_name} aux")
-        if "ERROR" in output: return output
+        if "ERROR" in output:
+            return output
         
         lines = output.split('\n')
         titles = lines[0].split()
-        processes = [l.split() for l in lines[1:] if l.strip()]
+        processes = [line.split() for line in lines[1:] if line.strip()]
 
         try:
             pid_idx = titles.index("PID")
@@ -219,7 +219,8 @@ def restart_service(container_name: str = None) -> str:
 
     try:
         output = _run_remote_docker(f"restart {container_name}")
-        if "ERROR" in output: return output
+        if "ERROR" in output:
+            return output
         msg = f"Restarted container remotely: {container_name}"
         logger.info(f"[restart_service] {msg}")
         return msg
@@ -369,17 +370,29 @@ def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 70.0
 
         # Step 2: Parse process information to find high CPU consumers
         lines = processes_result.split('\n')
-        high_cpu_processes = []
+        if len(lines) < 2:
+            return f"No process data found for {container_name}"
 
+        header = lines[0].split()
+        try:
+            cpu_idx = header.index("%CPU")
+            pid_idx = header.index("PID")
+            cmd_idx = header.index("COMMAND")
+        except ValueError:
+            # Fallback to standard aux indexes if headers mismatch
+            cpu_idx, pid_idx, cmd_idx = 2, 1, 10
+
+        high_cpu_processes = []
         for line in lines[1:]:  # Skip header
             parts = line.split()
-            if len(parts) >= 11:  # Ensure we have enough columns
+            if len(parts) > max(cpu_idx, pid_idx, cmd_idx):
                 try:
-                    cpu_usage = float(parts[2])  # %CPU column
-                    command = " ".join(parts[10:])  # COMMAND column
+                    cpu_usage = float(parts[cpu_idx])
+                    command = " ".join(parts[cmd_idx:])
+                    pid = parts[pid_idx]
 
                     if cpu_usage > cpu_threshold:
-                        high_cpu_processes.append((cpu_usage, command, parts[1]))  # (cpu%, command, pid)
+                        high_cpu_processes.append((cpu_usage, command, pid))
                 except (ValueError, IndexError):
                     continue
 
@@ -388,11 +401,14 @@ def auto_kill_cpu_stress(container_name: str = None, cpu_threshold: float = 70.0
             # Get the very top process from the lines (skipping header)
             if len(lines) > 1:
                 parts = lines[1].split()
-                if len(parts) >= 11:
-                    cpu_val = float(parts[2])
-                    pid_val = parts[1]
-                    cmd_val = " ".join(parts[10:])
-                    high_cpu_processes.append((cpu_val, cmd_val, pid_val))
+                if len(parts) > max(cpu_idx, pid_idx, cmd_idx):
+                    try:
+                        cpu_val = float(parts[cpu_idx])
+                        pid_val = parts[pid_idx]
+                        cmd_val = " ".join(parts[cmd_idx:])
+                        high_cpu_processes.append((cpu_val, cmd_val, pid_val))
+                    except (ValueError, IndexError):
+                        pass
             
         if not high_cpu_processes:
             return f"No processes found in {container_name}."
@@ -433,7 +449,8 @@ def validate_container_exists(container_name: str = None) -> str:
     try:
         output = _run_remote_docker(f"inspect -f '{{{{.State.Status}}}}' {container_name}")
         if "ERROR" in output:
-            if "No such container" in output: return f"❌ Container '{container_name}' not found"
+            if "No such container" in output:
+                return f"❌ Container '{container_name}' not found"
             return output
 
         status = output.strip().replace("'", "")
@@ -484,12 +501,13 @@ def post_grafana_annotation(text: str, tags: list) -> str:
 
 
 TOOLS = {
-    "get_top_processes":    get_top_processes,
-    "kill_process":         kill_process,
-    "restart_service":      restart_service,
-    "check_system_load":    check_system_load,
-    "reduce_system_load":   reduce_system_load,
-    "auto_kill_cpu_stress": auto_kill_cpu_stress,
+    "get_top_processes":      get_top_processes,
+    "kill_process":           kill_process,
+    "restart_service":        restart_service,
+    "check_system_load":      check_system_load,
+    "get_prometheus_metrics": get_prometheus_metrics,
+    "reduce_system_load":     reduce_system_load,
+    "auto_kill_cpu_stress":   auto_kill_cpu_stress,
     # post_grafana_annotation — called automatically by webhook(), not by LLM
     # validate_container_exists — internal guard, not AI-callable
 }
@@ -501,6 +519,7 @@ Available tools grouped by scenario (use ONLY the tools listed for the active sc
 - auto_kill_cpu_stress(container_name, cpu_threshold): Multi-step workflow to auto-kill high-CPU processes (preferred)
 - get_top_processes(container_name): Inspect top CPU processes in container (default: {DEFAULT_CONTAINER})
 - kill_process(container_name, process_name): Kill a named process (default container: {DEFAULT_CONTAINER})
+- get_prometheus_metrics(query): Query real-time metrics for verification.
 
 [scenario=ddos] Network / request rate attack:
 - restart_service(container_name): Restart the target container to recover from flood (default: {DEFAULT_CONTAINER})

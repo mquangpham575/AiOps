@@ -8,7 +8,10 @@ Endpoints:
   GET /metrics    → Prometheus metrics (tự động qua prometheus_flask_exporter)
 """
 
-import os, time, math, random
+import os
+import time
+import math
+import random
 from flask import Flask, jsonify, Response, request
 
 app = Flask(__name__)
@@ -43,7 +46,7 @@ def heavy():
     })
 
 
-@app.route("/cpu")
+@app.route("/cpu", methods=["GET", "POST"])
 def cpu_burn():
     """Tính toán nặng ~0.3s → dùng trong kịch bản stress-ng kết hợp."""
     start = time.time()
@@ -86,7 +89,8 @@ def memory_stress():
 
     # Release and force immediate GC so Prometheus sees a clean memory drop
     del _buffer
-    import gc; gc.collect()
+    import gc
+    gc.collect()
 
     return jsonify({
         "status": "ok",

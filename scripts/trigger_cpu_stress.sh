@@ -3,7 +3,7 @@
 # Scenario 2: CPU Stress Trigger and Recovery Monitor
 DURATION=300
 WORKERS=4
-TARGET_APP_URL="http://localhost:5000"
+TARGET_APP_URL="${TARGET_APP_URL:-http://localhost:80}"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -18,7 +18,7 @@ TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 echo "[ACTION] Stress triggered — workers=$WORKERS, duration=${DURATION}s — at $TIMESTAMP"
 
 # Hit the stress endpoint
-curl -X POST "$TARGET_APP_URL/stress" \
+curl -X POST "$TARGET_APP_URL/cpu" \
      -H "Content-Type: application/json" \
      -d "{\"workers\": $WORKERS, \"timeout\": $DURATION}"
 

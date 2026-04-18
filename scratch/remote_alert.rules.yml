@@ -27,8 +27,8 @@ groups:
           description: "Latency trung binh: {{ $value | humanizeDuration }}"
 
       - alert: HighRequestRate
-        expr: sum(rate(flask_http_request_total{job="target-app"}[15s])) > 15
-        for: 0s
+        expr: sum(rate(flask_http_request_total{job="target-app"}[30s])) > 15
+        for: 10s
         labels:
           severity: warning
           scenario: ddos
@@ -37,8 +37,8 @@ groups:
           description: "Rate: {{ $value }} packets/s"
 
       # - alert: ProactiveCPUSaturation
-      #   expr: predict_linear(node_cpu_seconds_total{mode!="idle"}[15s], 60) > 0.9
-      #   for: 0s
+      #   expr: predict_linear(node_cpu_seconds_total{mode!="idle"}[30s], 60) > 0.9
+      #   for: 10s
       #   labels:
       #     severity: critical
       #     scenario: cpu_stress
@@ -49,9 +49,9 @@ groups:
       - alert: HighCPUUsage
         expr: |
           100 - (avg by(instance)(
-            rate(node_cpu_seconds_total{mode="idle"}[15s])
-          ) * 100) > 10
-        for: 0s
+            rate(node_cpu_seconds_total{mode="idle"}[1m])
+          ) * 100) > 80
+        for: 10s
         labels:
           severity: critical
           scenario: cpu_stress

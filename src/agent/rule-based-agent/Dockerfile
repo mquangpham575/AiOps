@@ -2,16 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl openssh-client && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY agent.py .
+COPY rule_agent.py .
 
-RUN useradd -r -s /bin/false appuser && chown -R appuser /app
-USER appuser
+# Standardizing on root for the demo to ensure SSH key access
+USER root
 
 EXPOSE 5001
 
-CMD ["python", "agent.py"]
+CMD ["python", "rule_agent.py"]

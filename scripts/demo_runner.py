@@ -65,29 +65,35 @@ CONFIG_PATH = ROOT_DIR / "tests" / "performance" / "scenarios.yml"
 RESULTS_DIR = ROOT_DIR / "results"
 
 # ── Environment-based service URLs ───────────────────────────────────────────
-_azure_ip = os.environ.get("AZURE_VM_IP") or os.environ.get("AZURE_APP_IP")
-_default_target = f"http://{_azure_ip}:80" if _azure_ip else "http://localhost:5000"
+_azure_app_ip = os.environ.get("AZURE_VM_IP") or os.environ.get("AZURE_APP_IP")
+_azure_control_ip = (
+    os.environ.get("AZURE_CONTROL_IP")
+    or os.environ.get("AZURE_VM_IP")
+    or os.environ.get("AZURE_APP_IP")
+)
+_default_target = f"http://{_azure_app_ip}:80" if _azure_app_ip else "http://localhost:5000"
 
 TARGET_URL = os.environ.get("TARGET_URL", _default_target)
 AGENT_URL = os.environ.get(
-    "AGENT_URL", f"http://{_azure_ip}:8083" if _azure_ip else "http://localhost:8083"
+    "AGENT_URL",
+    f"http://{_azure_control_ip}:8083" if _azure_control_ip else "http://localhost:8083",
 )
 PROMETHEUS_URL = os.environ.get(
     "PROMETHEUS_URL",
-    f"http://{_azure_ip}:9090" if _azure_ip else "http://localhost:9090",
+    f"http://{_azure_control_ip}:9090" if _azure_control_ip else "http://localhost:9090",
 )
 AGENT_KEY = os.environ.get("AGENT_API_KEY", "")
 
 SCENARIO_TIMEOUT_S = 180
-POLL_INTERVAL_S = 2
-PROM_POLL_S = 3
+POLL_INTERVAL_S = 1
+PROM_POLL_S = 2
 
 
 def _resolve_docker_host() -> str | None:
     explicit = os.environ.get("DOCKER_HOST")
     if explicit:
         return explicit
-    if _azure_ip:
+    if _azure_app_ip:
         return "tcp://localhost:2375"
     return None
 
@@ -160,6 +166,7 @@ class DemoRunner:
         results_dir: Path = RESULTS_DIR,
         iterations: int | None = None,
         duration: int | None = None,
+        export_file: str | None = None,
         json_output: bool = False,
     ):
         if config is None:
@@ -178,8 +185,27 @@ class DemoRunner:
         self.cooldown_between = self.defaults.get("cooldown_between", 120)
         self.json_output = json_output
         self.results_dir = Path(results_dir)
+        self.export_file = export_file
         self.results: list[dict] = []
         self.json_data: dict[str, Any] = {"metadata": {}, "scenarios": {}}
+
+    def export_csv(self):
+        """Export results to CSV (compatible with unit tests)."""
+        if not self.export_file or not self.results:
+            return
+        
+        filepath = Path(self.export_file)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(filepath, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            for row in self.results:
+                # Filter row to only include CSV_FIELDS
+                filtered_row = {k: v for k, v in row.items() if k in CSV_FIELDS}
+                writer.writerow(filtered_row)
+        print(f"  [INFO] Exported {len(self.results)} results to {filepath}")
+        sys.stdout.flush()
 
     # ── Backwards-compatible test helpers ───────────────────────────────────
 
@@ -215,6 +241,35 @@ class DemoRunner:
             "latency_ms": round(lat_s * 1000, 1),
         }
 
+    def _get_control_node_ip(p) -> str:
+        """Extract IP from URL like http://1.2.3.4:9090."""
+        from urllib.parse import urlparse
+        return urlparse(p).hostname
+
+    def _print_remote_logs(self, container_name: str, lines: int = 5):
+        """Fetch and print logs from a container on the Control Node."""
+        ip = DemoRunner._get_control_node_ip(self.prometheus_url)
+        cmd = [
+            "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            "-i", ".ssh/aiops3_key_rsa",
+            f"azureuser@{ip}",
+            f"sudo docker logs --tail {lines} {container_name}"
+        ]
+        try:
+            print(f"  [LOGS] {container_name} on {ip}:")
+            # Minimal timeout to prevent hangs
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            if res.stdout:
+                for line in res.stdout.splitlines():
+                    print(f"    | {line}")
+            if res.stderr and "Error" in res.stderr:
+                print(f"    [ERR] {res.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            print(f"    [WARN] Log fetch timed out (2s)")
+        except Exception as e:
+            print(f"    [WARN] Could not fetch logs: {e}")
+        sys.stdout.flush()
+
     # ── JSON helpers ─────────────────────────────────────────────────────────
 
     def _init_json_scenario(self, scenario_key: str, cfg: dict) -> dict:
@@ -232,15 +287,10 @@ class DemoRunner:
             "comparison": {},
         }
 
-    def _save_run_json(
-        self,
-        scenario_key: str,
-        iteration: int,
-        phase: str,
-        metrics: dict,
-        extra_data: dict = None,
-    ) -> Path:
+    def _save_run_json(self, scenario_key: str, iteration: int, phase: str, metrics: dict, extra_data: dict = None) -> Path:
         """Save metrics for a single run/phase to JSON file."""
+        print(f"  [JSON] Saving {phase} metrics...")
+        sys.stdout.flush()
         scenario_dir = self.results_dir / scenario_key / "runs" / f"run_{iteration:03d}"
         scenario_dir.mkdir(parents=True, exist_ok=True)
 
@@ -308,7 +358,7 @@ class DemoRunner:
         print(f"  │ Profile: {profile}")
         print(f"  │ Duration: {duration}s")
         print(f"  │ Tags: --tags {profile}")
-        print(f"  │")
+        print("  │")
 
     def _print_phase_footer(self, metrics: dict):
         p50 = metrics.get("latency_p50_ms", "N/A")
@@ -319,7 +369,7 @@ class DemoRunner:
         cpu = metrics.get("cpu_pct", "N/A")
         print(f"  │  p50={p50}ms | p95={p95}ms | p99={p99}ms")
         print(f"  │  rps={rps} | errors={err}% | cpu={cpu}%")
-        print(f"  └──────────────────────────────────────────────────")
+        print("  └──────────────────────────────────────────────────")
 
     # ── Prometheus helpers ────────────────────────────────────────────────────
 
@@ -338,9 +388,13 @@ class DemoRunner:
         return default
 
     def _collect_metrics(self, metric_queries: dict) -> dict[str, float]:
-        return {
-            name: round(self._prom_query(q), 4) for name, q in metric_queries.items()
-        }
+        results = {}
+        for name, q in metric_queries.items():
+            print(f"    [PROM] Fetching {name}...", end="", flush=True)
+            val = round(self._prom_query(q), 4)
+            results[name] = val
+            print(f" {val}")
+        return results
 
     # ── Agent helpers ─────────────────────────────────────────────────────────
 
@@ -504,6 +558,8 @@ class DemoRunner:
 
     def _start_locust_phase(self, tags: str, duration: int) -> subprocess.Popen:
         env = {**os.environ, "ATTACK_PROFILE": tags}
+        # Using a log file for locust instead of DEVNULL to help debugging
+        log_path = self.results_dir / f"locust_{tags}.log"
         return subprocess.Popen(
             [
                 sys.executable,
@@ -520,19 +576,28 @@ class DemoRunner:
                 "--csv",
                 str(self.results_dir / "temp_locust"),
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=open(log_path, "w"),
+            stderr=subprocess.STDOUT,
             env=env,
         )
 
     def _stop_proc(self, proc: subprocess.Popen | None):
         if proc is None:
             return
-        proc.terminate()
+        
         try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            # Try polite termination first
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't stop
+                print("  [WARN] Process did not terminate, killing...")
+                proc.kill()
+                proc.wait()
+        except Exception as e:
+            print(f"  [WARN] Error stopping process: {e}")
+        sys.stdout.flush()
 
     # ── Throughput scenario (baseline vs load) ───────────────────────────────
 
@@ -557,9 +622,23 @@ class DemoRunner:
         settle = max(dur - 30, dur * 0.7)
         time.sleep(settle)
 
+        # Track logs during the wait
+        if phase_name == "LOAD":
+            self._print_remote_logs("prometheus", lines=3)
+
         # Collect metrics
         m = self._collect_metrics(metrics_q)
-        proc.wait(timeout=dur + 90)
+        
+        try:
+            # Locust should now exit cleanly via Shape logic
+            proc.wait(timeout=dur + 60)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] Locust phase '{phase_name}' timed out, forcing termination...")
+            self._stop_proc(proc)
+        
+        if phase_name == "LOAD":
+            self._print_remote_logs("prometheus", lines=5)
+        sys.stdout.flush()
 
         # Build metrics dict with proper units
         result = {
@@ -609,7 +688,7 @@ class DemoRunner:
             )
 
             # Phase 1: Baseline
-            print(f"  ║ BASELINE PHASE")
+            print("  ║ BASELINE PHASE")
             baseline_row = self._run_throughput_phase(
                 scenario_key, scenario_cfg, "baseline", baseline_cfg, i
             )
@@ -619,7 +698,7 @@ class DemoRunner:
             time.sleep(self.cooldown)
 
             # Phase 2: Load
-            print(f"  ║ LOAD PHASE")
+            print("  ║ LOAD PHASE")
             load_row = self._run_throughput_phase(
                 scenario_key, scenario_cfg, "load", load_cfg, i
             )
@@ -643,7 +722,7 @@ class DemoRunner:
                 time.sleep(self.cooldown_between)
             else:
                 print(
-                    f"  ╚═══════════════════════════════════════════════════════════════════╝"
+                    "  ╚═══════════════════════════════════════════════════════════════════╝"
                 )
 
         # Calculate summary and comparison
@@ -825,12 +904,20 @@ class DemoRunner:
             if t1:
                 print(f"  ║ Alert fired   T1={t1.strftime('%H:%M:%S')}")
             else:
-                print(f"  ║ Alert not detected within timeout")
+                print("  ║ Alert not detected within timeout")
 
             # T2: wait for agent action
             agent_entry = None
             deadline = time.time() + SCENARIO_TIMEOUT_S
+            start_wait = time.time()
+            last_heartbeat = time.time()
+            
             while time.time() < deadline:
+                # Heartbeat every 10s to show progress without hanging
+                if time.time() - last_heartbeat > 10:
+                    print(f"  ║ ... still waiting for AI Agent action ({int(time.time() - start_wait)}s elapsed)")
+                    last_heartbeat = time.time()
+                
                 agent_entry = self._find_agent_action(after=t0, scenario=agent_scenario)
                 if agent_entry:
                     print(
@@ -839,6 +926,7 @@ class DemoRunner:
                     )
                     break
                 time.sleep(POLL_INTERVAL_S)
+                sys.stdout.flush()
 
             # T3: wait for recovery
             t3 = None
@@ -875,10 +963,10 @@ class DemoRunner:
                     f"  ║ Recovered. MTTR={mttr_s}s  (detect={d} respond={rsp} remediate={rem})"
                 )
             else:
-                print(f"  ║ TIMEOUT — recovery not detected")
+                print("  ║ TIMEOUT — recovery not detected")
 
             print(
-                f"  ╚═══════════════════════════════════════════════════════════════════╝"
+                "  ╚═══════════════════════════════════════════════════════════════════╝"
             )
 
             row = {
@@ -983,9 +1071,9 @@ class DemoRunner:
             self._print_scenario_header(key, cfg)
 
             if key == "throughput":
-                rows = self._run_throughput(key, cfg)
+                self._run_throughput(key, cfg)
             else:
-                rows = self._run_remediation(key, cfg)
+                self._run_remediation(key, cfg)
 
             # Export JSON for this scenario
             if self.json_output:

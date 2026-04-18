@@ -34,7 +34,7 @@ from google import genai
 from google.genai import types as genai_types  # GenerateContentConfig, etc.
 
 from tools import TOOLS, TOOLS_DESCRIPTION, post_grafana_annotation
-import requests as _requests  # aliased to avoid collision with tools.requests
+import requests
 from prometheus_client import Gauge, Counter
 
 # ── Logging setup ────────────────────────────────────────────
@@ -73,38 +73,57 @@ except Exception as e:
 
 # ── MTTR Prometheus gauges ──────────────────────────────────
 # AGENT_RESPONSE_LATENCY: Thời gian suy luận của AI (từ khi nhận webhook đến khi ra quyết định)
-AGENT_RESPONSE_LATENCY = Gauge(
-    "agent_response_latency_seconds",
-    "Time from webhook received to action taken (AI reasoning time)",
-    ["agent_type"],
-)
+try:
+    AGENT_RESPONSE_LATENCY = Gauge(
+        "agent_response_latency_seconds",
+        "Time from webhook received to action taken (AI reasoning time)",
+        ["agent_type"],
+    )
+except ValueError:
+    from prometheus_client import REGISTRY
+    AGENT_RESPONSE_LATENCY = REGISTRY._names_to_collectors["agent_response_latency_seconds"]
 # AGENT_MTTR: Thời gian từ khi Alert bắt đầu đến khi hồi phục (Scientific MTTR)
-# Chúng tôi map labels(agent_type='ai') vào đây để dashboard hiển thị giá trị tốt nhất.
-AGENT_MTTR = Gauge(
-    "agent_mttr_seconds",
-    "End-to-end incident response time (alert startsAt to recovery detected)",
-    ["agent_type"],
-)
+try:
+    AGENT_MTTR = Gauge(
+        "agent_mttr_seconds",
+        "End-to-end incident response time (alert startsAt to recovery detected)",
+        ["agent_type"],
+    )
+except ValueError:
+    from prometheus_client import REGISTRY
+    AGENT_MTTR = REGISTRY._names_to_collectors["agent_mttr_seconds"]
 # AGENT_MTTA: Mean Time To Action (Legacy MTTR - alert startsAt đến khi thực thi tool)
-AGENT_MTTA = Gauge(
-    "agent_mtta_seconds",
-    "Time from alert startsAt to first remediation action taken",
-    ["agent_type"],
-)
+try:
+    AGENT_MTTA = Gauge(
+        "agent_mtta_seconds",
+        "Time from alert startsAt to first remediation action taken",
+        ["agent_type"],
+    )
+except ValueError:
+    from prometheus_client import REGISTRY
+    AGENT_MTTA = REGISTRY._names_to_collectors["agent_mtta_seconds"]
 
 # AGENT_REMEDIATION_COUNT: Theo dõi số lượng hành động remediation (success/failure/resolved)
-AGENT_REMEDIATION_COUNT = Counter(
-    "agent_remediation_count_total",
-    "Total count of remediation actions taken by the agent",
-    ["agent_type", "status"],
-)
+try:
+    AGENT_REMEDIATION_COUNT = Counter(
+        "agent_remediation_count_total",
+        "Total count of remediation actions taken by the agent",
+        ["agent_type", "status"],
+    )
+except ValueError:
+    from prometheus_client import REGISTRY
+    AGENT_REMEDIATION_COUNT = REGISTRY._names_to_collectors["agent_remediation_count_total"]
 
 # AGENT_CONFIDENCE: Độ tự tin của AI trong quyết định gần nhất
-AGENT_CONFIDENCE = Gauge(
-    "agent_confidence_score",
-    "Latest AI confidence score for decision making",
-    ["agent_type"],
-)
+try:
+    AGENT_CONFIDENCE = Gauge(
+        "agent_confidence_score",
+        "Latest AI confidence score for decision making",
+        ["agent_type"],
+    )
+except ValueError:
+    from prometheus_client import REGISTRY
+    AGENT_CONFIDENCE = REGISTRY._names_to_collectors["agent_confidence_score"]
 
 # Khởi tạo giá trị 0 cho các labels thông dụng để Prometheus scrape được ngay từ đầu
 # Tránh tình trạng "No Data" trên dashboard.
@@ -169,6 +188,11 @@ def require_api_key(f):
 # ── Action log: lưu 100 action gần nhất ─────────────────────
 action_log = deque(maxlen=100)
 
+# ── MTTR Lifecycle Tracking ─────────────────────────────────
+# Tracks active polling threads to allow cancellation when alerts are resolved or logic shifts.
+_active_mttr_polls = {}  # {scenario: threading.Event}
+_mttr_lock = threading.Lock()
+
 # ── Prometheus query map per scenario ────────────────────────
 _PROM_QUERIES = {
     "cpu_stress": {
@@ -218,7 +242,7 @@ def _prom_query(query: str) -> float | str:
     # Execute an instant query against the Prometheus API and return the numeric result.
     """Run a single Prometheus instant query. Returns float or 'N/A' on any failure."""
     try:
-        resp = _requests.get(
+        resp = requests.get(
             f"{PROMETHEUS_URL}/api/v1/query",
             params={"query": query},
             timeout=3,
@@ -284,8 +308,9 @@ RESPONSE RULES (MANDATORY - follow exactly):
   {{"reasoning": "High CPU detected at 92%", "action": "auto_kill_cpu_stress", "params": {{"container_name": "target-app", "cpu_threshold": 80}}, "confidence": 0.9}}
 - Example WRONG response (DO NOT do this):
   {{"reasoning": "...", "action": "auto_kill_cpu_stress(container_name=...)", "params": {{}}, ...}}  ← WRONG
-- Use null action only if the metrics clearly show the alert has already self-resolved.
+- Use null action only if the metrics clearly show the alert has already self-resolved or if values are below operational thresholds.
 - Base your reasoning on the actual metric VALUES provided — mention the numbers.
+- DO NOT act on CPU values below 40% even if an alert is firing (it might be a false positive or transient spike).
 
 SCENARIO → TOOL MAPPING (STRICT — never mix tools across scenarios):
 
@@ -373,7 +398,7 @@ def call_gemini(prompt: str, retry_count: int = 0) -> tuple[dict, float]:
         try:
             # Try direct parsing first
             decision = json.loads(raw)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             # Try to find JSON block in text (handles edge cases)
             json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             if json_match:
@@ -449,15 +474,16 @@ Details    : {description}
 {metrics_section}
 Analyze the metrics above and choose the single best remediation action.
 Respond ONLY with valid JSON matching the schema: {{reasoning, action, params, confidence}}.
-Note: 'confidence' must be a number between 0 and 100 representing your percentage of certainty.
+Note: 'confidence' must be a number between 0.0 and 1.0 representing your certainty (e.g. 0.95).
 """
 
 
-def _poll_recovery(log_id: str, scenario: str, start_time: datetime):
+def _poll_recovery(log_id: str, scenario: str, start_time: datetime, stop_event: threading.Event):
     # Background thread to poll Prometheus until system recovery is detected for accurate MTTR.
     """
     Polls Prometheus every 5s for up to 5 minutes.
     When recovery thresholds are met, updates the action log entry and Prometheus gauges.
+    Checks stop_event to allow early termination.
     """
     timeout_s = 300
     poll_interval = 5
@@ -470,8 +496,17 @@ def _poll_recovery(log_id: str, scenario: str, start_time: datetime):
     logger.info(f"[metrics] MTTR tracking started for {log_id} ({scenario})")
 
     while elapsed < timeout_s:
+        # Check for cancellation before sleep and after sleep
+        if stop_event.is_set():
+            logger.info(f"[metrics] MTTR tracking CANCELLED for {log_id} ({scenario})")
+            return
+
         time.sleep(poll_interval)
         elapsed += poll_interval
+
+        if stop_event.is_set():
+            logger.info(f"[metrics] MTTR tracking CANCELLED (after sleep) for {log_id}")
+            return
         
         # Build context (query live metrics)
         try:
@@ -497,17 +532,19 @@ def _poll_recovery(log_id: str, scenario: str, start_time: datetime):
                 recovery_time = datetime.now(timezone.utc)
                 mttr_s = round((recovery_time - start_time).total_seconds(), 1)
                 
-                # Update action log entry
-                for entry in action_log:
+                # Update action log entry (Thread-safe list copy)
+                found = False
+                for entry in list(action_log):
                     if entry.get("id") == log_id:
                         entry["mttr_actual_s"] = mttr_s
                         entry["recovered_at"] = recovery_time.isoformat()
+                        found = True
                         break
                 
-                # Update Prometheus Metric
-                # Update Prometheus Metric with high priority 'ai' label for dashboard headline
-                AGENT_MTTR.labels(agent_type="ai").set(mttr_s)
-                logger.info(f"[metrics] RECOVERY DETECTED for {log_id}. MTTR: {mttr_s}s")
+                if found:
+                    # Update Prometheus Metric with high priority 'ai' label for dashboard headline
+                    AGENT_MTTR.labels(agent_type="ai").set(mttr_s)
+                    logger.info(f"[metrics] RECOVERY DETECTED for {log_id}. MTTR: {mttr_s}s")
                 return
 
         except Exception as e:
@@ -556,6 +593,13 @@ def webhook():
 
         # Bỏ qua alert đã resolve (chỉ log)
         if status == "resolved":
+            # Cancel any active MTTR polling for this scenario
+            with _mttr_lock:
+                if scenario in _active_mttr_polls:
+                    logger.info(f"[webhook] Signalling MTTR stop for {scenario} due to resolved status")
+                    _active_mttr_polls[scenario].set()
+                    del _active_mttr_polls[scenario]
+
             entry = {
                 "id": log_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -593,7 +637,16 @@ def webhook():
         reasoning  = decision.get("reasoning", "")
         action     = decision.get("action")
         params     = decision.get("params", {})
+        
+        # Normalize confidence to 0.0 - 1.0 scale
         confidence = decision.get("confidence", 0.0)
+        try:
+            confidence = float(confidence)
+            if confidence > 1.0:
+                confidence = confidence / 100.0
+            confidence = max(0.0, min(1.0, confidence))
+        except (ValueError, TypeError):
+            confidence = 0.0
 
         # Ensure params is always a dict before unpacking — LLM may return a string, list, or None
         if not isinstance(params, dict):
@@ -659,11 +712,21 @@ def webhook():
                 starts_at_raw = alert.get("startsAt", "")
                 if starts_at_raw:
                     t_start = datetime.fromisoformat(starts_at_raw.replace("Z", "+00:00"))
-                    threading.Thread(
-                        target=_poll_recovery,
-                        args=(log_id, scenario, t_start),
-                        daemon=True
-                    ).start()
+                    
+                    # Manage thread lifecycle for this scenario
+                    with _mttr_lock:
+                        if scenario in _active_mttr_polls:
+                            logger.info(f"[webhook] Cancelling previous MTTR thread for {scenario}")
+                            _active_mttr_polls[scenario].set()
+                        
+                        stop_event = threading.Event()
+                        _active_mttr_polls[scenario] = stop_event
+                        
+                        threading.Thread(
+                            target=_poll_recovery,
+                            args=(log_id, scenario, t_start, stop_event),
+                            daemon=True
+                        ).start()
             except Exception as e:
                 logger.error(f"[metrics] Failed to span MTTR thread: {e}")
 

@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'target-app'
+    static_configs:
+      - targets: ['4.194.57.3:80']
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['172.17.0.1:8080', '4.194.57.3:8080']
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['172.17.0.1:9100', '4.194.57.3:9100', '104.215.191.69:9100']
+
+  - job_name: 'pushgateway'
+    static_configs:
+      - targets: ['172.17.0.1:9091']
